@@ -198,19 +198,32 @@ def run_scan():
                 print(f"  {listing['title']}")
                 insufficient_data += 1
                 continue
-            comps = ebay.search_sold_comps(keywords, token)
+            comps = ebay.search_sold_comps(keywords, token, listing_title=listing["title"])
             sold_prices = comps["prices"]
             auction_count = comps["auction_count"]
             bin_count = comps["bin_count"]
+            club_count_unknown = comps["club_count_unknown"]
 
-            if len(sold_prices) < 3:
+            if auction_count < 5:
                 insufficient_data += 1
-                print(f"\n  ⚠️ Check manually — insufficient sold data ({len(sold_prices)} comps)")
+                print(f"\n  ⚠️ Check manually — insufficient auction comps ({auction_count} found, need 5)")
                 print(f"  {listing['title']}")
                 print(f"  {listing['url']}")
                 continue
 
             avg_sold = round(sum(sold_prices) / len(sold_prices), 2)
+
+            # Price sanity checks
+            if avg_sold > listing["price"] * 4:
+                print(f"\n  ⚠️ Check manually — comp data suspect (avg £{avg_sold:.0f} is 4x+ listing £{listing['price']:.0f})")
+                print(f"  {listing['title']}")
+                insufficient_data += 1
+                continue
+            if avg_sold < listing["price"] * 0.8:
+                print(f"  ❌ {listing['title'][:70]} — overpriced vs comps (listing £{listing['price']:.0f}, avg sold £{avg_sold:.0f})")
+                not_viable += 1
+                continue
+
             max_bid = calc_max_bid(avg_sold, listing["shipping_cost"])
             projected_profit = round(avg_sold - listing["total_cost"], 2)
             roi = calc_roi(avg_sold, listing["total_cost"])
@@ -230,7 +243,9 @@ def run_scan():
                                     "roi": roi, "comp_count": len(sold_prices),
                                     "comp_prices": sold_prices,
                                     "auction_count": auction_count,
-                                    "bin_count": bin_count})
+                                    "bin_count": bin_count,
+                                    "club_count_unknown": club_count_unknown,
+                                    "comp_query": keywords})
                 written_to_notion += 1
 
         except Exception as exc:

@@ -77,21 +77,36 @@ def _detect_condition(condition_str: str) -> str:
     return "Unknown"
 
 
+def _confidence(comp_count: int, comp_prices: list) -> str:
+    if not comp_prices or comp_count < 3:
+        return "LOW"
+    price_range = max(comp_prices) / min(comp_prices) if min(comp_prices) > 0 else 99
+    if comp_count >= 8 and price_range < 1.5:
+        return "HIGH"
+    if comp_count >= 5:
+        return "MEDIUM"
+    return "LOW"
+
+
 def _build_notes(opp: dict) -> str:
     lines = [f"eBay item ID: {opp['item_id']}"]
+    if opp.get("comp_query"):
+        lines.append(f"Comp query: {opp['comp_query']}")
+    if opp.get("club_count_unknown"):
+        lines.append("club count unknown")
     if opp.get("avg_sold") is not None:
-        comp_count = opp.get("comp_count", "?")
+        comp_count = opp.get("comp_count", 0)
         auction_count = opp.get("auction_count", "?")
         bin_count = opp.get("bin_count", "?")
         comp_prices = opp.get("comp_prices", [])
-        lines.append(f"{comp_count} sold comps ({auction_count} auction, {bin_count} BIN)")
+        confidence = _confidence(comp_count, comp_prices)
+        line = f"{comp_count} comps ({auction_count} auction, {bin_count} BIN)"
         if comp_prices:
-            lines.append(f"range £{min(comp_prices):.0f}–£{max(comp_prices):.0f}")
-        lines.append(f"avg £{opp['avg_sold']:.0f}")
+            line += f" / range £{min(comp_prices):.0f}–£{max(comp_prices):.0f}"
+        line += f" / avg £{opp['avg_sold']:.0f} / confidence: {confidence}"
+        lines.append(line)
     else:
         lines.append(f"Insufficient sold data ({opp.get('comp_count', 0)} comps found)")
-    if opp.get("flag") == "⚠️ Check manually" and opp.get("avg_sold") is None:
-        lines.append("Caveat: max bid not calculated — verify manually")
     return "\n".join(lines)
 
 

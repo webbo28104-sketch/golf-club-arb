@@ -153,6 +153,27 @@ def search_auction_listings(token: str, tomorrow: date) -> list[dict]:
     return listings
 
 
+_IRON_VALUE = {
+    "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+    "pw": 10, "p": 10, "aw": 11, "gw": 11, "sw": 11, "lw": 12, "w": 11,
+}
+
+def count_clubs(title: str) -> int | None:
+    """Extract number of clubs in a set from a listing title. Returns None if unknown."""
+    import re as _re
+    tl = title.lower()
+    # Match patterns like "4-pw", "5-9", "4-aw", "6-sw" etc.
+    m = _re.search(r'\b(\d|pw|aw|gw|sw|lw)\s*[-–]\s*(\d{1,2}|pw|aw|gw|sw|lw)\b', tl)
+    if not m:
+        return None
+    start_str, end_str = m.group(1).strip(), m.group(2).strip()
+    start = _IRON_VALUE.get(start_str)
+    end = _IRON_VALUE.get(end_str)
+    if start is None or end is None or end < start:
+        return None
+    return end - start + 1
+
+
 def _browse_ended(token: str, keywords: str, buying_option: str, cutoff: str, now_str: str) -> list[dict]:
     headers = {
         "Authorization": f"Bearer {token}",
@@ -176,17 +197,14 @@ def _browse_ended(token: str, keywords: str, buying_option: str, cutoff: str, no
         return []
 
 
-def search_sold_comps(keywords: str, token: str) -> dict:
+def search_sold_comps(keywords: str, token: str, listing_title: str = "") -> dict:
     """Ended UK auction + BIN listings from last 30 days as sold-price comps.
 
-    Returns dict with keys: prices, auction_count, bin_count.
+    Returns dict with keys: prices, auction_count, bin_count, club_count_unknown.
 
-    Auctions: only include if bidCount >= 1 (real hammer prices).
-    BINs: ended FIXED_PRICE listings filtered to exclude outliers:
-      - if auction comps exist: drop any BIN price > 2x median auction price
-      - if no auction comps: only use BINs if 5+ results (reduces noise risk)
-    Browse API has no sold-only filter; BIN ended != BIN sold. The 2x ceiling
-    and minimum-count guard are heuristics to limit unsold-listing contamination.
+    Auctions: bidCount >= 1 only (real hammer prices).
+    BINs: ended FIXED_PRICE, filtered to <= 2x median auction price.
+    Club count: comps are filtered to ±1 of listing club count where detectable.
     """
     from datetime import timezone as _tz
     import statistics
@@ -195,20 +213,35 @@ def search_sold_comps(keywords: str, token: str) -> dict:
     cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # --- Auction comps (reliable: bidCount >= 1 = real transaction) ---
+    listing_club_count = count_clubs(listing_title) if listing_title else None
+    club_count_unknown = listing_club_count is None
+
+    def _club_count_ok(title: str) -> bool:
+        if listing_club_count is None:
+            return True  # unknown — include all
+        comp_count = count_clubs(title)
+        if comp_count is None:
+            return True  # can't determine comp count — give benefit of doubt
+        return abs(comp_count - listing_club_count) <= 1
+
+    # --- Auction comps ---
     auction_prices = []
     for item in _browse_ended(token, keywords, "AUCTION", cutoff, now_str):
         try:
             if int(item.get("bidCount", 0)) < 1:
                 continue
+            if not _club_count_ok(item.get("title", "")):
+                continue
             auction_prices.append(float(item["currentBidPrice"]["value"]))
         except (KeyError, TypeError, ValueError):
             continue
 
-    # --- BIN comps (heuristic: ended listings, filtered by outlier ceiling) ---
+    # --- BIN comps ---
     bin_raw = []
     for item in _browse_ended(token, keywords, "FIXED_PRICE", cutoff, now_str):
         try:
+            if not _club_count_ok(item.get("title", "")):
+                continue
             bin_raw.append(float(item["price"]["value"]))
         except (KeyError, TypeError, ValueError):
             continue
@@ -216,15 +249,14 @@ def search_sold_comps(keywords: str, token: str) -> dict:
     bin_prices = []
     if bin_raw:
         if auction_prices:
-            median_auction = statistics.median(auction_prices)
-            ceiling = median_auction * 2.0
+            ceiling = statistics.median(auction_prices) * 2.0
             bin_prices = [p for p in bin_raw if p <= ceiling]
         elif len(bin_raw) >= 5:
-            # No auction reference — only trust BINs when we have enough to self-filter
             bin_prices = bin_raw
 
     return {
         "prices": auction_prices + bin_prices,
         "auction_count": len(auction_prices),
         "bin_count": len(bin_prices),
+        "club_count_unknown": club_count_unknown,
     }
