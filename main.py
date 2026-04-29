@@ -190,7 +190,7 @@ def run_scan():
                 print(f"  {listing['title']}")
                 insufficient_data += 1
                 continue
-            sold_prices = ebay.search_sold_comps(keywords)
+            sold_prices = ebay.search_sold_comps(keywords, token)
 
             if len(sold_prices) < 3:
                 insufficient_data += 1

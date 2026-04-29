@@ -141,59 +141,41 @@ def search_auction_listings(token: str, tomorrow: date) -> list[dict]:
     return listings
 
 
-def search_sold_comps(keywords: str) -> list[float]:
-    """eBay UK sold listings from last 30 days — returns list of sold prices in GBP."""
-    import time
+def search_sold_comps(keywords: str, token: str) -> list[float]:
+    """Recently-ended UK golf listings from Browse API — proxy for sold comps.
+
+    Uses itemEndDate filter (last 30 days) as the Browse API has no sold-only
+    filter. Ended auctions are almost always sold; ended BINs may not be, but
+    the price distribution is still a useful comp signal.
+    """
     utc = ZoneInfo("UTC")
-    cutoff = (datetime.now(utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    now = datetime.now(utc)
+    cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE_ID,
+    }
     params = {
-        "OPERATION-NAME": "findCompletedItems",
-        "SERVICE-VERSION": "1.0.0",
-        "SECURITY-APPNAME": _require_env("EBAY_CLIENT_ID"),
-        "RESPONSE-DATA-FORMAT": "JSON",
-        "REST-PAYLOAD": "",
-        "keywords": keywords,
-        "itemFilter(0).name": "SoldItemsOnly",
-        "itemFilter(0).value": "true",
-        "itemFilter(1).name": "EndTimeFrom",
-        "itemFilter(1).value": cutoff,
-        "itemFilter(2).name": "Currency",
-        "itemFilter(2).value": "GBP",
-        "sortOrder": "EndTimeSoonest",
-        "paginationInput.entriesPerPage": "10",
-        "siteid": FINDING_SITE_ID,
+        "q": keywords,
+        "filter": f"buyingOptions:{{AUCTION|FIXED_PRICE}},itemEndDate:[{cutoff}..{now_str}]",
+        "limit": 10,
+        "sort": "endingSoonest",
     }
 
-    for attempt in range(2):
-        try:
-            resp = requests.get(FINDING_URL, params=params, timeout=10)
-            if resp.status_code in (500, 502, 503, 504):
-                if attempt == 0:
-                    time.sleep(2)
-                    continue
-                return []  # Finding API unavailable — treat as no comps
-            resp.raise_for_status()
-            break
-        except requests.exceptions.RequestException:
-            if attempt == 0:
-                time.sleep(2)
-                continue
-            return []
-    else:
-        return []
-
     try:
-        data = resp.json()
-        items = data["findCompletedItemsResponse"][0]["searchResult"][0].get("item", [])
-    except (KeyError, IndexError, ValueError):
+        resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException:
         return []
 
+    items = resp.json().get("itemSummaries", [])
     prices = []
     for item in items:
         try:
-            price = float(item["sellingStatus"][0]["currentPrice"][0]["__value__"])
+            price = float(item["price"]["value"])
             prices.append(price)
-        except (KeyError, IndexError, ValueError):
+        except (KeyError, TypeError, ValueError):
             continue
-
     return prices
