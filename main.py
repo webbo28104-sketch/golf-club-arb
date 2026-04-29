@@ -29,6 +29,11 @@ def _check_env():
 
 SKIP_OLD = ["persimmon", "vintage", "hickory", "metal wood", "wooden driver", "wound ball"]
 SKIP_MIXED = ["mixed", "job lot", "various", "assorted", "bundle"]
+SKIP_JUNK = [
+    "advertisement", "print ad", "magazine", "poster", "image of",
+    "shirt", "polo", "jacket", "clothing", "apparel", "hat", "cap", "glove",
+    "rangefinder", "range finder", "gps", "trolley", "push cart", "towel", "tee", "ball marker",
+]
 SINGLE_IRON_RE = re.compile(r'\b([3-9]|three|four|five|six|seven|eight|nine)\s*[-\s]?iron\b', re.IGNORECASE)
 KEEP_SINGLE_TYPES = ["putter", "wedge", "driver", "hybrid", "fairway wood", "fairway", "wood"]
 MAX_TOTAL_COST = 500.0
@@ -59,6 +64,8 @@ def should_skip(listing: dict) -> tuple[bool, str]:
         return True, "vintage/old club"
     if any(kw in tl for kw in SKIP_MIXED):
         return True, "mixed/job lot"
+    if any(kw in tl for kw in SKIP_JUNK):
+        return True, "junk listing"
     if listing["total_cost"] > MAX_TOTAL_COST:
         return True, f"total £{listing['total_cost']:.2f} exceeds limit"
     return False, ""
@@ -200,14 +207,6 @@ def run_scan():
                 print(f"\n  ⚠️ Check manually — insufficient sold data ({len(sold_prices)} comps)")
                 print(f"  {listing['title']}")
                 print(f"  {listing['url']}")
-                if MODE != "learning":
-                    nc.add_opportunity({**listing, "flag": "⚠️ Check manually",
-                                        "avg_sold": None, "max_bid": None,
-                                        "projected_profit": None, "roi": None,
-                                        "comp_count": len(sold_prices),
-                                        "auction_count": auction_count,
-                                        "bin_count": bin_count})
-                    written_to_notion += 1
                 continue
 
             avg_sold = round(sum(sold_prices) / len(sold_prices), 2)
@@ -224,7 +223,7 @@ def run_scan():
 
             _print_opportunity(listing, avg_sold, len(sold_prices), max_bid, projected_profit, roi, flag)
 
-            if MODE != "learning":
+            if MODE != "learning" and flag in ("🔥 Strong buy", "👀 Worth a look"):
                 nc.add_opportunity({**listing, "flag": flag, "avg_sold": avg_sold,
                                     "max_bid": max_bid, "projected_profit": projected_profit,
                                     "roi": roi, "comp_count": len(sold_prices),

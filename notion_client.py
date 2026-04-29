@@ -12,7 +12,7 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-WRITE_FLAGS = {"🔥 Strong buy", "👀 Worth a look", "⚠️ Check manually"}
+WRITE_FLAGS = {"🔥 Strong buy", "👀 Worth a look"}
 
 _BRANDS = [
     ("titleist", "Titleist"),
@@ -128,15 +128,22 @@ def add_opportunity(opp: dict) -> None:
     if opp.get("listing_type") == "Auction" and opp.get("end_time"):
         props["date:Auction Ends:start"] = {"date": {"start": opp["end_time"]}}
 
+    import json as _json
+    payload = {"parent": {"database_id": db_id}, "properties": props}
+    print(f"[notion] Sending to DB {db_id}:")
+    print(_json.dumps(payload, indent=2, ensure_ascii=False)[:2000])
+
     try:
         resp = requests.post(
             f"{NOTION_API}/pages",
             headers=HEADERS,
-            json={"parent": {"database_id": db_id}, "properties": props},
+            json=payload,
         )
+        print(f"[notion] Response {resp.status_code}: {resp.text[:500]}")
         resp.raise_for_status()
+        print(f"[notion] ✅ Logged: {opp['title'][:60]}")
     except Exception as exc:
-        print(f"[notion] Failed to log '{opp['title']}': {exc}")
+        print(f"[notion] ❌ Failed to log '{opp['title']}': {exc}")
 
 
 def check_already_logged(item_id: str) -> bool:
