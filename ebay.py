@@ -65,6 +65,7 @@ def _build_listing(item: dict, listing_type: str, shipping: float) -> dict:
 
 
 def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed") -> list[dict]:
+    import time as _time
     headers = {
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE_ID,
@@ -82,8 +83,19 @@ def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed") -> lis
             "sort": sort,
             "fieldgroups": "EXTENDED",
         }
-        resp = requests.get(BROWSE_URL, headers=headers, params=params)
-        resp.raise_for_status()
+        for attempt in range(4):
+            resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=15)
+            if resp.status_code == 429:
+                wait = 60 * (2 ** attempt)  # 60s, 120s, 240s, 480s
+                print(f"[ebay] 429 rate limited — waiting {wait}s before retry {attempt + 1}/4")
+                _time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        else:
+            print("[ebay] Giving up after 4 rate-limit retries — returning partial results")
+            return results
+
         data = resp.json()
         items = data.get("itemSummaries", [])
         if not items:

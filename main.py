@@ -257,5 +257,8 @@ def _schedule_midnight_run():
 
 if __name__ == "__main__":
     print("⛳ Startup scan triggered...")
-    run_scan()
+    try:
+        run_scan()
+    except Exception as exc:
+        print(f"[error] Startup scan failed: {exc}")
     _schedule_midnight_run()
