@@ -143,6 +143,7 @@ def search_auction_listings(token: str, tomorrow: date) -> list[dict]:
 
 def search_sold_comps(keywords: str) -> list[float]:
     """eBay UK sold listings from last 30 days — returns list of sold prices in GBP."""
+    import time
     utc = ZoneInfo("UTC")
     cutoff = (datetime.now(utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     params = {
@@ -162,13 +163,29 @@ def search_sold_comps(keywords: str) -> list[float]:
         "paginationInput.entriesPerPage": "10",
         "siteid": FINDING_SITE_ID,
     }
-    resp = requests.get(FINDING_URL, params=params)
-    resp.raise_for_status()
-    data = resp.json()
+
+    for attempt in range(2):
+        try:
+            resp = requests.get(FINDING_URL, params=params, timeout=10)
+            if resp.status_code in (500, 502, 503, 504):
+                if attempt == 0:
+                    time.sleep(2)
+                    continue
+                return []  # Finding API unavailable — treat as no comps
+            resp.raise_for_status()
+            break
+        except requests.exceptions.RequestException:
+            if attempt == 0:
+                time.sleep(2)
+                continue
+            return []
+    else:
+        return []
 
     try:
+        data = resp.json()
         items = data["findCompletedItemsResponse"][0]["searchResult"][0].get("item", [])
-    except (KeyError, IndexError):
+    except (KeyError, IndexError, ValueError):
         return []
 
     prices = []
