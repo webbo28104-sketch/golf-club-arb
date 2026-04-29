@@ -31,8 +31,9 @@ SKIP_OLD = ["persimmon", "vintage", "hickory", "metal wood", "wooden driver", "w
 SKIP_MIXED = ["mixed", "job lot", "various", "assorted", "bundle"]
 SKIP_JUNK = [
     "advertisement", "print ad", "magazine", "poster", "image of",
-    "shirt", "polo", "jacket", "clothing", "apparel", "hat", "cap", "glove",
+    "shirt", "polo", "jacket", "clothing", "apparel", "hat", "cap", "glove", "vest", "sweater", "jumper",
     "rangefinder", "range finder", "gps", "trolley", "push cart", "towel", "tee", "ball marker",
+    "head cover", "headcover", "club cover", "head only", "shaft only", "grip only",
 ]
 SINGLE_IRON_RE = re.compile(r'\b([3-9]|three|four|five|six|seven|eight|nine)\s*[-\s]?iron\b', re.IGNORECASE)
 KEEP_SINGLE_TYPES = ["putter", "wedge", "driver", "hybrid", "fairway wood", "fairway", "wood"]
