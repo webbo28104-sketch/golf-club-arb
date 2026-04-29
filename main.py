@@ -235,5 +235,6 @@ def _schedule_midnight_run():
 
 
 if __name__ == "__main__":
-    run_scan()           # run immediately on startup
+    print("⛳ Startup scan triggered...")
+    run_scan()
     _schedule_midnight_run()
