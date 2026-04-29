@@ -66,16 +66,24 @@ def should_skip(listing: dict) -> tuple[bool, str]:
 
 # --- Sold comp keyword extraction ---
 
+GENERIC_TERMS = {"lh", "rh", "left", "right", "handed", "iron", "set", "steel", "graphite",
+                 "flex", "shaft", "regular", "stiff", "senior", "store", "new", "used"}
+
 def extract_search_terms(title: str) -> str:
     tl = title.lower()
     found_brand = next((b for b in BRANDS if b in tl), None)
     if found_brand:
         idx = tl.find(found_brand)
-        after_brand = title[idx + len(found_brand):].strip().split()
+        after_brand = [w for w in title[idx + len(found_brand):].strip().split()
+                       if w.lower() not in GENERIC_TERMS]
         model = " ".join(after_brand[:2]) if after_brand else ""
-        return f"{found_brand} {model}".strip()
+        query = f"{found_brand} {model}".strip()
+        # Only return if we have brand + at least one meaningful model word
+        if len(query.split()) >= 2 and model:
+            return query
+        return found_brand  # bare brand — caller will skip if too short
     stop = {"used", "golf", "club", "clubs", "good", "excellent", "condition",
-            "inc", "with", "great", "lovely"}
+            "inc", "with", "great", "lovely"} | GENERIC_TERMS
     meaningful = [w for w in title.split()[:10] if w.lower() not in stop]
     return " ".join(meaningful[:4])
 
@@ -177,6 +185,11 @@ def run_scan():
                 continue
 
             keywords = extract_search_terms(listing["title"])
+            if len(keywords.split()) < 2:
+                print(f"  ⚠️ Check manually — can't extract model from title")
+                print(f"  {listing['title']}")
+                insufficient_data += 1
+                continue
             sold_prices = ebay.search_sold_comps(keywords)
 
             if len(sold_prices) < 3:

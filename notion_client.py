@@ -141,7 +141,7 @@ def check_already_logged(item_id: str) -> bool:
         "filter": {
             "and": [
                 {
-                    "property": "date:Date Spotted:start",
+                    "property": "Date Spotted",
                     "date": {"equals": today},
                 },
                 {
