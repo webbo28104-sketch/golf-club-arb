@@ -96,42 +96,35 @@ def _build_notes(opp: dict) -> str:
 
 
 def add_opportunity(opp: dict) -> None:
-    """Write a listing row to the eBay Opportunity Log. Only call for 🔥, 👀, ⚠️ flags."""
+    """Write a listing row to the eBay Opportunity Log. Only call for 🔥, 👀 flags."""
     if opp.get("flag") not in WRITE_FLAGS:
         return
 
     db_id = get_db_id()
     today = date.today().isoformat()
-    snipe = False  # always False in learning mode; caller can override
 
     props = {
-        "Listing Title": {"title": [{"text": {"content": opp["title"]}}]},
-        "eBay Link": {"url": opp["url"]},
-        "Buy It Now Price": {"number": opp["price"]},
-        "Shipping Cost": {"number": opp["shipping_cost"]},
-        "Total Cost": {"number": opp["total_cost"]},
+        "Listing Title": {"title": [{"text": {"content": str(opp["title"])}}]},
+        "eBay Link": {"url": str(opp["url"])},
+        "Buy It Now Price": {"number": float(opp["price"])},
+        "Shipping Cost": {"number": float(opp["shipping_cost"])},
+        "Total Cost": {"number": float(opp["total_cost"])},
+        "Gross Profit": {"number": float(opp["projected_profit"]) if opp.get("projected_profit") is not None else 0.0},
+        "ROI %": {"number": float(opp["roi"]) if opp.get("roi") is not None else 0.0},
+        "My Max Bid": {"number": float(opp["max_bid"]) if opp.get("max_bid") is not None else 0.0},
         "Flag": {"select": {"name": opp["flag"]}},
         "Club Type": {"select": {"name": _detect_club_type(opp["title"])}},
         "Brand": {"select": {"name": _detect_brand(opp["title"])}},
         "Condition Assessed": {"select": {"name": _detect_condition(opp.get("condition", ""))}},
-        "date:Date Spotted:start": {"date": {"start": today}},
-        "Snipe?": {"checkbox": snipe},
+        "Date Spotted": {"date": {"start": today}},
+        "Snipe?": {"checkbox": False},
         "Notes": {"rich_text": [{"text": {"content": _build_notes(opp)}}]},
     }
 
-    if opp.get("projected_profit") is not None:
-        props["Gross Profit"] = {"number": opp["projected_profit"]}
-    if opp.get("roi") is not None:
-        props["ROI %"] = {"number": opp["roi"]}
-    if opp.get("max_bid") is not None:
-        props["My Max Bid"] = {"number": opp["max_bid"]}
     if opp.get("listing_type") == "Auction" and opp.get("end_time"):
-        props["date:Auction Ends:start"] = {"date": {"start": opp["end_time"]}}
+        props["Auction Ends"] = {"date": {"start": opp["end_time"]}}
 
-    import json as _json
     payload = {"parent": {"database_id": db_id}, "properties": props}
-    print(f"[notion] Sending to DB {db_id}:")
-    print(_json.dumps(payload, indent=2, ensure_ascii=False)[:2000])
 
     try:
         resp = requests.post(
@@ -139,11 +132,10 @@ def add_opportunity(opp: dict) -> None:
             headers=HEADERS,
             json=payload,
         )
-        print(f"[notion] Response {resp.status_code}: {resp.text[:500]}")
         resp.raise_for_status()
         print(f"[notion] ✅ Logged: {opp['title'][:60]}")
     except Exception as exc:
-        print(f"[notion] ❌ Failed to log '{opp['title']}': {exc}")
+        print(f"[notion] ❌ Failed '{opp['title'][:60]}': {exc} — {getattr(exc, 'response', None) and exc.response.text[:300]}")
 
 
 def check_already_logged(item_id: str) -> bool:
