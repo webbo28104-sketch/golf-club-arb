@@ -64,7 +64,7 @@ def _build_listing(item: dict, listing_type: str, shipping: float) -> dict:
     }
 
 
-def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed") -> list[dict]:
+def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed", max_results: int = 500) -> list[dict]:
     import time as _time
     headers = {
         "Authorization": f"Bearer {token}",
@@ -72,7 +72,7 @@ def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed") -> lis
     }
     results = []
     offset = 0
-    limit = 200
+    limit = 50  # smaller pages = less aggressive, stays under rate limit
 
     while True:
         params = {
@@ -83,17 +83,17 @@ def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed") -> lis
             "sort": sort,
             "fieldgroups": "EXTENDED",
         }
-        for attempt in range(4):
+        for attempt in range(3):
             resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=15)
             if resp.status_code == 429:
-                wait = 60 * (2 ** attempt)  # 60s, 120s, 240s, 480s
-                print(f"[ebay] 429 rate limited — waiting {wait}s before retry {attempt + 1}/4")
+                wait = 30 * (2 ** attempt)  # 30s, 60s, 120s
+                print(f"[ebay] 429 rate limited — waiting {wait}s before retry {attempt + 1}/3")
                 _time.sleep(wait)
                 continue
             resp.raise_for_status()
             break
         else:
-            print("[ebay] Giving up after 4 rate-limit retries — returning partial results")
+            print("[ebay] Giving up after 3 rate-limit retries — returning partial results")
             return results
 
         data = resp.json()
@@ -103,8 +103,9 @@ def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed") -> lis
         results.extend(items)
         total = int(data.get("total", 0))
         offset += limit
-        if offset >= total or offset >= 10000:
+        if offset >= total or offset >= max_results:
             break
+        _time.sleep(1)  # polite delay between pages
 
     return results
 
