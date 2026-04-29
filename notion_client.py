@@ -1,6 +1,6 @@
 import os
 import requests
-from datetime import date
+from datetime import date, datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -117,6 +117,8 @@ def add_opportunity(opp: dict) -> None:
         "Brand": {"select": {"name": _detect_brand(opp["title"])}},
         "Condition Assessed": {"select": {"name": _detect_condition(opp.get("condition", ""))}},
         "Date Spotted": {"date": {"start": today}},
+        "Spotted At": {"date": {"start": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S") + "Z"}},
+        "Expected Revenue": {"number": float(opp.get("avg_sold") or 0.0)},
         "Snipe?": {"checkbox": False},
         "Notes": {"rich_text": [{"text": {"content": _build_notes(opp)}}]},
     }
