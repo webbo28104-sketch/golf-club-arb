@@ -271,9 +271,5 @@ def _schedule_midnight_run():
 
 
 if __name__ == "__main__":
-    print("⛳ Startup scan triggered...")
-    try:
-        run_scan()
-    except Exception as exc:
-        print(f"[error] Startup scan failed: {exc}")
+    print("⛳ Golf Club Arb started — waiting for midnight UK to run scan.")
     _schedule_midnight_run()
