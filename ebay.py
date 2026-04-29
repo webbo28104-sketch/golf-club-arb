@@ -142,14 +142,14 @@ def search_auction_listings(token: str, tomorrow: date) -> list[dict]:
 
 
 def search_sold_comps(keywords: str, token: str) -> list[float]:
-    """Recently-ended UK golf listings from Browse API — proxy for sold comps.
+    """Ended UK auctions from last 30 days via Browse API — clean sold-price comps.
 
-    Uses itemEndDate filter (last 30 days) as the Browse API has no sold-only
-    filter. Ended auctions are almost always sold; ended BINs may not be, but
-    the price distribution is still a useful comp signal.
+    Auctions only (no BIN): ended auction price == currentBidPrice, which is the
+    final hammer price. Excludes unsold expired BINs that corrupt pricing data.
+    Marketplace Insights API (true sold-only) requires separate eBay programme access.
     """
-    utc = ZoneInfo("UTC")
-    now = datetime.now(utc)
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
     cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -159,7 +159,7 @@ def search_sold_comps(keywords: str, token: str) -> list[float]:
     }
     params = {
         "q": keywords,
-        "filter": f"buyingOptions:{{AUCTION|FIXED_PRICE}},itemEndDate:[{cutoff}..{now_str}]",
+        "filter": f"buyingOptions:{{AUCTION}},itemEndDate:[{cutoff}..{now_str}]",
         "limit": 10,
         "sort": "endingSoonest",
     }
@@ -170,11 +170,11 @@ def search_sold_comps(keywords: str, token: str) -> list[float]:
     except requests.exceptions.RequestException:
         return []
 
-    items = resp.json().get("itemSummaries", [])
     prices = []
-    for item in items:
+    for item in resp.json().get("itemSummaries", []):
         try:
-            price = float(item["price"]["value"])
+            # Ended auctions expose the hammer price as currentBidPrice
+            price = float(item["currentBidPrice"]["value"])
             prices.append(price)
         except (KeyError, TypeError, ValueError):
             continue
