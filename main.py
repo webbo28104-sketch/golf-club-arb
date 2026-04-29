@@ -1,0 +1,239 @@
+import os
+import re
+import sys
+import schedule
+import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
+import ebay
+import notion_client as nc
+
+load_dotenv()
+
+UK_TZ = ZoneInfo("Europe/London")
+MODE = os.getenv("MODE", "learning")
+
+# --- Environment validation ---
+
+REQUIRED_VARS = ["EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "NOTION_TOKEN", "NOTION_OPPORTUNITY_DB_ID"]
+
+
+def _check_env():
+    missing = [k for k in REQUIRED_VARS if not os.environ.get(k)]
+    if missing:
+        sys.exit(f"[error] Missing required environment variables: {', '.join(missing)}")
+
+
+# --- Filters ---
+
+SKIP_OLD = ["persimmon", "vintage", "hickory", "metal wood", "wooden driver", "wound ball"]
+SKIP_MIXED = ["mixed", "job lot", "various", "assorted", "bundle"]
+SINGLE_IRON_RE = re.compile(r'\b([3-9]|three|four|five|six|seven|eight|nine)\s*[-\s]?iron\b', re.IGNORECASE)
+KEEP_SINGLE_TYPES = ["putter", "wedge", "driver", "hybrid", "fairway wood", "fairway", "wood"]
+MAX_TOTAL_COST = 500.0
+
+BRANDS = [
+    "titleist", "callaway", "taylormade", "ping", "cobra", "mizuno",
+    "cleveland", "srixon", "wilson", "vokey", "scotty cameron", "odyssey",
+    "honma", "ben hogan", "tour edge", "adams",
+]
+
+
+def _is_single_iron(title: str) -> bool:
+    if not SINGLE_IRON_RE.search(title):
+        return False
+    tl = title.lower()
+    if any(kw in tl for kw in ["set", "irons", "iron set", "half set", "full set"]):
+        return False
+    if any(kw in tl for kw in KEEP_SINGLE_TYPES):
+        return False
+    return True
+
+
+def should_skip(listing: dict) -> tuple[bool, str]:
+    tl = listing["title"].lower()
+    if _is_single_iron(listing["title"]):
+        return True, "single iron"
+    if any(kw in tl for kw in SKIP_OLD):
+        return True, "vintage/old club"
+    if any(kw in tl for kw in SKIP_MIXED):
+        return True, "mixed/job lot"
+    if listing["total_cost"] > MAX_TOTAL_COST:
+        return True, f"total £{listing['total_cost']:.2f} exceeds limit"
+    return False, ""
+
+
+# --- Sold comp keyword extraction ---
+
+def extract_search_terms(title: str) -> str:
+    tl = title.lower()
+    found_brand = next((b for b in BRANDS if b in tl), None)
+    if found_brand:
+        idx = tl.find(found_brand)
+        after_brand = title[idx + len(found_brand):].strip().split()
+        model = " ".join(after_brand[:2]) if after_brand else ""
+        return f"{found_brand} {model}".strip()
+    stop = {"used", "golf", "club", "clubs", "good", "excellent", "condition",
+            "inc", "with", "great", "lovely"}
+    meaningful = [w for w in title.split()[:10] if w.lower() not in stop]
+    return " ".join(meaningful[:4])
+
+
+# --- Pricing ---
+
+def _get_divisor(avg_sold: float) -> float:
+    if avg_sold < 50:    return 1.25
+    if avg_sold < 100:   return 1.20
+    if avg_sold < 200:   return 1.15
+    if avg_sold < 350:   return 1.12
+    if avg_sold < 600:   return 1.10
+    return 1.07
+
+
+def calc_max_bid(avg_sold: float, shipping_cost: float) -> float:
+    return round((avg_sold / _get_divisor(avg_sold)) - shipping_cost, 2)
+
+
+def calc_roi(avg_sold: float, total_cost: float) -> float:
+    if total_cost <= 0:
+        return 0.0
+    return round((avg_sold - total_cost) / total_cost * 100, 1)
+
+
+def assess_flag(total_cost: float, max_bid: float, avg_sold: float) -> str:
+    profit = avg_sold - total_cost
+    if total_cost < max_bid * 0.90:
+        return "🔥 Strong buy"
+    if total_cost <= max_bid:
+        return "👀 Worth a look"
+    if profit > 80:
+        return "⚠️ Check manually"
+    return "❌ Not viable"
+
+
+# --- Console output ---
+
+def _print_opportunity(listing: dict, avg_sold: float, comp_count: int,
+                        max_bid: float, projected_profit: float, roi: float, flag: str):
+    print(f"\n  {flag}  {listing['title']}")
+    print(f"  URL:      {listing['url']}")
+    print(f"  Type:     {listing['listing_type']}", end="")
+    if listing["end_time"]:
+        print(f"  |  Ends: {listing['end_time']}", end="")
+    print()
+    print(f"  Price:    £{listing['price']:.2f}  |  Shipping: £{listing['shipping_cost']:.2f}  |  Total: £{listing['total_cost']:.2f}")
+    print(f"  Avg sold: £{avg_sold:.2f} from {comp_count} comps  |  Max bid: £{max_bid:.2f}")
+    print(f"  Profit:   £{projected_profit:.2f}  |  ROI: {roi}%")
+
+
+# --- Main scan ---
+
+def run_scan():
+    _check_env()
+
+    now_uk = datetime.now(UK_TZ)
+    yesterday = (now_uk - timedelta(days=1)).date()
+    tomorrow = (now_uk + timedelta(days=1)).date()
+
+    print(
+        f"\n⛳ Golf Club Arb — midnight run — "
+        f"BIN listings from {yesterday} + auctions ending {tomorrow} — "
+        f"{now_uk.strftime('%Y-%m-%d %H:%M %Z')}"
+    )
+
+    try:
+        token = ebay.get_access_token()
+    except Exception as exc:
+        sys.exit(f"[error] Failed to get eBay access token: {exc}")
+
+    bin_listings = ebay.search_bin_listings(token, yesterday)
+    auction_listings = ebay.search_auction_listings(token, tomorrow)
+
+    # Deduplicate by item ID (prefer BIN if somehow duplicated)
+    seen: dict[str, dict] = {}
+    for listing in bin_listings + auction_listings:
+        if listing["item_id"] not in seen:
+            seen[listing["item_id"]] = listing
+    all_listings = list(seen.values())
+
+    total_found = len(all_listings)
+    skipped_filter = 0
+    skipped_logged = 0
+    not_viable = 0
+    written_to_notion = 0
+    insufficient_data = 0
+
+    for listing in all_listings:
+        try:
+            skip, reason = should_skip(listing)
+            if skip:
+                print(f"  [skip] {listing['title'][:80]} — {reason}")
+                skipped_filter += 1
+                continue
+
+            if nc.check_already_logged(listing["item_id"]):
+                skipped_logged += 1
+                continue
+
+            keywords = extract_search_terms(listing["title"])
+            sold_prices = ebay.search_sold_comps(keywords)
+
+            if len(sold_prices) < 3:
+                insufficient_data += 1
+                print(f"\n  ⚠️ Check manually — insufficient sold data ({len(sold_prices)} comps)")
+                print(f"  {listing['title']}")
+                print(f"  {listing['url']}")
+                if MODE != "learning":
+                    nc.add_opportunity({**listing, "flag": "⚠️ Check manually",
+                                        "avg_sold": None, "max_bid": None,
+                                        "projected_profit": None, "roi": None,
+                                        "comp_count": len(sold_prices)})
+                    written_to_notion += 1
+                continue
+
+            avg_sold = round(sum(sold_prices) / len(sold_prices), 2)
+            max_bid = calc_max_bid(avg_sold, listing["shipping_cost"])
+            projected_profit = round(avg_sold - listing["total_cost"], 2)
+            roi = calc_roi(avg_sold, listing["total_cost"])
+            flag = assess_flag(listing["total_cost"], max_bid, avg_sold)
+
+            if flag == "❌ Not viable":
+                print(f"  ❌ {listing['title'][:70]} — not viable "
+                      f"(total £{listing['total_cost']:.2f} > max bid £{max_bid:.2f})")
+                not_viable += 1
+                continue
+
+            _print_opportunity(listing, avg_sold, len(sold_prices), max_bid, projected_profit, roi, flag)
+
+            if MODE != "learning":
+                nc.add_opportunity({**listing, "flag": flag, "avg_sold": avg_sold,
+                                    "max_bid": max_bid, "projected_profit": projected_profit,
+                                    "roi": roi, "comp_count": len(sold_prices)})
+                written_to_notion += 1
+
+        except Exception as exc:
+            print(f"  [error] Failed processing '{listing.get('title', '?')[:60]}': {exc}")
+            continue
+
+    print(
+        f"\nScan complete — {total_found} found, {skipped_filter} skipped (filter), "
+        f"{skipped_logged} skipped (already logged), {not_viable} not viable, "
+        f"{written_to_notion} written to Notion ({insufficient_data} insufficient sold data)"
+    )
+
+
+def _schedule_midnight_run():
+    """Schedule run_scan to fire at midnight UK time every day."""
+    import pytz
+    london = pytz.timezone("Europe/London")
+    schedule.every().day.at("00:00", london).do(run_scan)
+    print(f"[scheduler] Next run scheduled for midnight Europe/London.")
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+
+if __name__ == "__main__":
+    run_scan()           # run immediately on startup
+    _schedule_midnight_run()
