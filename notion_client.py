@@ -80,7 +80,13 @@ def _detect_condition(condition_str: str) -> str:
 def _build_notes(opp: dict) -> str:
     lines = [f"eBay item ID: {opp['item_id']}"]
     if opp.get("avg_sold") is not None:
-        lines.append(f"Avg sold: £{opp['avg_sold']:.2f} from {opp.get('comp_count', '?')} comps")
+        comp_count = opp.get("comp_count", "?")
+        avg = opp["avg_sold"]
+        comp_prices = opp.get("comp_prices", [])
+        lines.append(f"{comp_count} sold comps")
+        if comp_prices:
+            lines.append(f"range £{min(comp_prices):.0f}–£{max(comp_prices):.0f}")
+        lines.append(f"avg £{avg:.0f}")
     else:
         lines.append(f"Insufficient sold data ({opp.get('comp_count', 0)} comps found)")
     if opp.get("flag") == "⚠️ Check manually" and opp.get("avg_sold") is None:

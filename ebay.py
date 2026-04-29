@@ -173,7 +173,8 @@ def search_sold_comps(keywords: str, token: str) -> list[float]:
     prices = []
     for item in resp.json().get("itemSummaries", []):
         try:
-            # Ended auctions expose the hammer price as currentBidPrice
+            if int(item.get("bidCount", 0)) < 1:
+                continue  # no bids = unsold, starting price is meaningless
             price = float(item["currentBidPrice"]["value"])
             prices.append(price)
         except (KeyError, TypeError, ValueError):

@@ -222,7 +222,8 @@ def run_scan():
             if MODE != "learning":
                 nc.add_opportunity({**listing, "flag": flag, "avg_sold": avg_sold,
                                     "max_bid": max_bid, "projected_profit": projected_profit,
-                                    "roi": roi, "comp_count": len(sold_prices)})
+                                    "roi": roi, "comp_count": len(sold_prices),
+                                    "comp_prices": sold_prices})
                 written_to_notion += 1
 
         except Exception as exc:
