@@ -1,5 +1,5 @@
 {
   "deploy": {
-    "startCommand": "python reprice.py"
+    "startCommand": "python main.py"
   }
 }
