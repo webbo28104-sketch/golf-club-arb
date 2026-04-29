@@ -141,42 +141,78 @@ def search_auction_listings(token: str, tomorrow: date) -> list[dict]:
     return listings
 
 
-def search_sold_comps(keywords: str, token: str) -> list[float]:
-    """Ended UK auctions from last 30 days via Browse API — clean sold-price comps.
-
-    Auctions only (no BIN): ended auction price == currentBidPrice, which is the
-    final hammer price. Excludes unsold expired BINs that corrupt pricing data.
-    Marketplace Insights API (true sold-only) requires separate eBay programme access.
-    """
-    from datetime import timezone as _tz
-    now = datetime.now(_tz.utc)
-    cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-
+def _browse_ended(token: str, keywords: str, buying_option: str, cutoff: str, now_str: str) -> list[dict]:
     headers = {
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE_ID,
     }
-    params = {
-        "q": keywords,
-        "filter": f"buyingOptions:{{AUCTION}},itemEndDate:[{cutoff}..{now_str}]",
-        "limit": 10,
-        "sort": "endingSoonest",
-    }
-
     try:
-        resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=10)
+        resp = requests.get(
+            BROWSE_URL,
+            headers=headers,
+            params={
+                "q": keywords,
+                "filter": f"buyingOptions:{{{buying_option}}},itemEndDate:[{cutoff}..{now_str}]",
+                "limit": 10,
+                "sort": "endingSoonest",
+            },
+            timeout=10,
+        )
         resp.raise_for_status()
+        return resp.json().get("itemSummaries", [])
     except requests.exceptions.RequestException:
         return []
 
-    prices = []
-    for item in resp.json().get("itemSummaries", []):
+
+def search_sold_comps(keywords: str, token: str) -> dict:
+    """Ended UK auction + BIN listings from last 30 days as sold-price comps.
+
+    Returns dict with keys: prices, auction_count, bin_count.
+
+    Auctions: only include if bidCount >= 1 (real hammer prices).
+    BINs: ended FIXED_PRICE listings filtered to exclude outliers:
+      - if auction comps exist: drop any BIN price > 2x median auction price
+      - if no auction comps: only use BINs if 5+ results (reduces noise risk)
+    Browse API has no sold-only filter; BIN ended != BIN sold. The 2x ceiling
+    and minimum-count guard are heuristics to limit unsold-listing contamination.
+    """
+    from datetime import timezone as _tz
+    import statistics
+
+    now = datetime.now(_tz.utc)
+    cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # --- Auction comps (reliable: bidCount >= 1 = real transaction) ---
+    auction_prices = []
+    for item in _browse_ended(token, keywords, "AUCTION", cutoff, now_str):
         try:
             if int(item.get("bidCount", 0)) < 1:
-                continue  # no bids = unsold, starting price is meaningless
-            price = float(item["currentBidPrice"]["value"])
-            prices.append(price)
+                continue
+            auction_prices.append(float(item["currentBidPrice"]["value"]))
         except (KeyError, TypeError, ValueError):
             continue
-    return prices
+
+    # --- BIN comps (heuristic: ended listings, filtered by outlier ceiling) ---
+    bin_raw = []
+    for item in _browse_ended(token, keywords, "FIXED_PRICE", cutoff, now_str):
+        try:
+            bin_raw.append(float(item["price"]["value"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    bin_prices = []
+    if bin_raw:
+        if auction_prices:
+            median_auction = statistics.median(auction_prices)
+            ceiling = median_auction * 2.0
+            bin_prices = [p for p in bin_raw if p <= ceiling]
+        elif len(bin_raw) >= 5:
+            # No auction reference — only trust BINs when we have enough to self-filter
+            bin_prices = bin_raw
+
+    return {
+        "prices": auction_prices + bin_prices,
+        "auction_count": len(auction_prices),
+        "bin_count": len(bin_prices),
+    }

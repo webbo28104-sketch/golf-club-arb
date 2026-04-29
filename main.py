@@ -190,7 +190,10 @@ def run_scan():
                 print(f"  {listing['title']}")
                 insufficient_data += 1
                 continue
-            sold_prices = ebay.search_sold_comps(keywords, token)
+            comps = ebay.search_sold_comps(keywords, token)
+            sold_prices = comps["prices"]
+            auction_count = comps["auction_count"]
+            bin_count = comps["bin_count"]
 
             if len(sold_prices) < 3:
                 insufficient_data += 1
@@ -201,7 +204,9 @@ def run_scan():
                     nc.add_opportunity({**listing, "flag": "⚠️ Check manually",
                                         "avg_sold": None, "max_bid": None,
                                         "projected_profit": None, "roi": None,
-                                        "comp_count": len(sold_prices)})
+                                        "comp_count": len(sold_prices),
+                                        "auction_count": auction_count,
+                                        "bin_count": bin_count})
                     written_to_notion += 1
                 continue
 
@@ -223,7 +228,9 @@ def run_scan():
                 nc.add_opportunity({**listing, "flag": flag, "avg_sold": avg_sold,
                                     "max_bid": max_bid, "projected_profit": projected_profit,
                                     "roi": roi, "comp_count": len(sold_prices),
-                                    "comp_prices": sold_prices})
+                                    "comp_prices": sold_prices,
+                                    "auction_count": auction_count,
+                                    "bin_count": bin_count})
                 written_to_notion += 1
 
         except Exception as exc:
