@@ -211,10 +211,11 @@ def run_scan():
             auction_count = comps["auction_count"]
             bin_count = comps["bin_count"]
             club_count_unknown = comps["club_count_unknown"]
+            filters_relaxed = comps["filters_relaxed"]
 
-            if auction_count < 5:
+            if auction_count < 3:
                 insufficient_data += 1
-                print(f"\n  ⚠️ Check manually — insufficient auction comps ({auction_count} found, need 5)")
+                print(f"\n  ⚠️ Check manually — insufficient auction comps ({auction_count} found, need 3)")
                 print(f"  {listing['title']}")
                 print(f"  {listing['url']}")
                 continue
@@ -253,6 +254,7 @@ def run_scan():
                                     "auction_count": auction_count,
                                     "bin_count": bin_count,
                                     "club_count_unknown": club_count_unknown,
+                                    "filters_relaxed": filters_relaxed,
                                     "comp_query": keywords})
                 written_to_notion += 1
 

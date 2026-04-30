@@ -220,14 +220,38 @@ def _browse_ended(token: str, keywords: str, buying_option: str, cutoff: str, no
         return []
 
 
+_LH_TERMS = {"left handed", "left-handed", " lh ", "lh ", " lh"}
+_RH_TERMS = {"right handed", "right-handed", " rh ", "rh ", " rh"}
+_STEEL_TERMS = {"steel", "dynamic gold", "kbs", "modus", "px", "project x", "true temper"}
+_GRAPHITE_TERMS = {"graphite", "aldila", "fujikura", "mitsubishi", "tensei", "fubuki"}
+
+
+def _detect_handedness(title: str) -> str:
+    tl = " " + title.lower() + " "
+    if any(t in tl for t in _LH_TERMS):
+        return "LH"
+    if any(t in tl for t in _RH_TERMS):
+        return "RH"
+    return ""
+
+
+def _detect_shaft(title: str) -> str:
+    tl = title.lower()
+    if any(t in tl for t in _STEEL_TERMS):
+        return "steel"
+    if any(t in tl for t in _GRAPHITE_TERMS):
+        return "graphite"
+    return ""
+
+
 def search_sold_comps(keywords: str, token: str, listing_title: str = "") -> dict:
     """Ended UK auction + BIN listings from last 30 days as sold-price comps.
 
-    Returns dict with keys: prices, auction_count, bin_count, club_count_unknown.
+    Returns dict with keys: prices, auction_count, bin_count, club_count_unknown, filters_relaxed.
 
     Auctions: bidCount >= 1 only (real hammer prices).
     BINs: ended FIXED_PRICE, filtered to <= 2x median auction price.
-    Club count: comps are filtered to ±1 of listing club count where detectable.
+    Filters: handedness, shaft type, club count ±1. Relaxed progressively if < 3 comps remain.
     """
     from datetime import timezone as _tz
     import statistics
@@ -236,50 +260,81 @@ def search_sold_comps(keywords: str, token: str, listing_title: str = "") -> dic
     cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    listing_hand = _detect_handedness(listing_title)
+    listing_shaft = _detect_shaft(listing_title)
     listing_club_count = count_clubs(listing_title) if listing_title else None
     club_count_unknown = listing_club_count is None
 
-    def _club_count_ok(title: str) -> bool:
-        if listing_club_count is None:
-            return True  # unknown — include all
-        comp_count = count_clubs(title)
-        if comp_count is None:
-            return True  # can't determine comp count — give benefit of doubt
-        return abs(comp_count - listing_club_count) <= 1
+    def _passes(title: str, check_hand: bool, check_shaft: bool, check_count: bool) -> bool:
+        if check_hand and listing_hand:
+            comp_hand = _detect_handedness(title)
+            if comp_hand and comp_hand != listing_hand:
+                return False
+        if check_shaft and listing_shaft:
+            comp_shaft = _detect_shaft(title)
+            if comp_shaft and comp_shaft != listing_shaft:
+                return False
+        if check_count and listing_club_count is not None:
+            comp_count = count_clubs(title)
+            if comp_count is not None and abs(comp_count - listing_club_count) > 1:
+                return False
+        return True
 
-    # --- Auction comps ---
-    auction_prices = []
-    for item in _browse_ended(token, keywords, "AUCTION", cutoff, now_str):
-        try:
-            if int(item.get("bidCount", 0)) < 1:
-                continue
-            if not _club_count_ok(item.get("title", "")):
-                continue
-            auction_prices.append(float(item["currentBidPrice"]["value"]))
-        except (KeyError, TypeError, ValueError):
-            continue
+    # Fetch raw results once
+    raw_auction = _browse_ended(token, keywords, "AUCTION", cutoff, now_str)
+    raw_bin = _browse_ended(token, keywords, "FIXED_PRICE", cutoff, now_str)
 
-    # --- BIN comps (separate API call — _browse_get already sleeps 2s) ---
-    bin_raw = []
-    for item in _browse_ended(token, keywords, "FIXED_PRICE", cutoff, now_str):
-        try:
-            if not _club_count_ok(item.get("title", "")):
+    def _extract(check_hand: bool, check_shaft: bool, check_count: bool):
+        auctions = []
+        for item in raw_auction:
+            try:
+                if int(item.get("bidCount", 0)) < 1:
+                    continue
+                if not _passes(item.get("title", ""), check_hand, check_shaft, check_count):
+                    continue
+                auctions.append(float(item["currentBidPrice"]["value"]))
+            except (KeyError, TypeError, ValueError):
                 continue
-            bin_raw.append(float(item["price"]["value"]))
-        except (KeyError, TypeError, ValueError):
-            continue
 
-    bin_prices = []
-    if bin_raw:
-        if auction_prices:
-            ceiling = statistics.median(auction_prices) * 2.0
-            bin_prices = [p for p in bin_raw if p <= ceiling]
-        elif len(bin_raw) >= 5:
-            bin_prices = bin_raw
+        bins_raw = []
+        for item in raw_bin:
+            try:
+                if not _passes(item.get("title", ""), check_hand, check_shaft, check_count):
+                    continue
+                bins_raw.append(float(item["price"]["value"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        bins = []
+        if bins_raw:
+            if auctions:
+                ceiling = statistics.median(auctions) * 2.0
+                bins = [p for p in bins_raw if p <= ceiling]
+            elif len(bins_raw) >= 5:
+                bins = bins_raw
+
+        return auctions, bins
+
+    # Try strictest filter first, relax progressively until we have 3+ auction comps
+    filters_relaxed = []
+    for check_hand, check_shaft, check_count, note in [
+        (True,  True,  True,  None),
+        (True,  False, True,  "shaft filter relaxed"),
+        (True,  False, False, "shaft+club count relaxed"),
+        (False, False, False, "all filters relaxed"),
+    ]:
+        auction_prices, bin_prices = _extract(check_hand, check_shaft, check_count)
+        if len(auction_prices) >= 3:
+            if note:
+                filters_relaxed.append(note)
+            break
+        if note:
+            filters_relaxed.append(note)
 
     return {
         "prices": auction_prices + bin_prices,
         "auction_count": len(auction_prices),
         "bin_count": len(bin_prices),
         "club_count_unknown": club_count_unknown,
+        "filters_relaxed": filters_relaxed,
     }

@@ -81,9 +81,9 @@ def _confidence(comp_count: int, comp_prices: list) -> str:
     if not comp_prices or comp_count < 3:
         return "LOW"
     price_range = max(comp_prices) / min(comp_prices) if min(comp_prices) > 0 else 99
-    if comp_count >= 8 and price_range < 1.5:
+    if comp_count >= 6 and price_range < 1.5:
         return "HIGH"
-    if comp_count >= 5:
+    if comp_count >= 3:
         return "MEDIUM"
     return "LOW"
 
@@ -94,6 +94,8 @@ def _build_notes(opp: dict) -> str:
         lines.append(f"Comp query: {opp['comp_query']}")
     if opp.get("club_count_unknown"):
         lines.append("club count unknown")
+    if opp.get("filters_relaxed"):
+        lines.append(f"filters relaxed: {', '.join(opp['filters_relaxed'])}")
     if opp.get("avg_sold") is not None:
         comp_count = opp.get("comp_count", 0)
         auction_count = opp.get("auction_count", "?")
