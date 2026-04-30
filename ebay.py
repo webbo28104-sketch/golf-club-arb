@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo
@@ -64,15 +65,47 @@ def _build_listing(item: dict, listing_type: str, shipping: float) -> dict:
     }
 
 
-def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed", max_results: int = 500) -> list[dict]:
-    import time as _time
+_api_call_count = 0
+
+
+def _get_call_count() -> int:
+    return _api_call_count
+
+
+def _reset_call_count():
+    global _api_call_count
+    _api_call_count = 0
+
+
+def _browse_get(headers: dict, params: dict, call_limit: int = 150) -> requests.Response | None:
+    """Single rate-limited GET to the Browse API. Returns None if call limit exceeded."""
+    global _api_call_count
+    if _api_call_count >= call_limit:
+        print(f"[ebay] API call limit ({call_limit}) reached — stopping")
+        return None
+    time.sleep(2)  # never more than 1 call per 2 seconds
+    for attempt in range(3):
+        resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=15)
+        _api_call_count += 1
+        if resp.status_code == 429:
+            waits = [60, 120, 300]
+            wait = waits[attempt]
+            print(f"[ebay] 429 rate limited — waiting {wait}s before retry {attempt + 1}/3")
+            time.sleep(wait)
+            continue
+        return resp
+    print("[ebay] Giving up after 3 rate-limit retries")
+    return None
+
+
+def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed", max_results: int = 100) -> list[dict]:
     headers = {
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE_ID,
     }
     results = []
     offset = 0
-    limit = 50  # smaller pages = less aggressive, stays under rate limit
+    limit = 50
 
     while True:
         params = {
@@ -83,18 +116,10 @@ def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed", max_re
             "sort": sort,
             "fieldgroups": "EXTENDED",
         }
-        for attempt in range(3):
-            resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=15)
-            if resp.status_code == 429:
-                wait = 30 * (2 ** attempt)  # 30s, 60s, 120s
-                print(f"[ebay] 429 rate limited — waiting {wait}s before retry {attempt + 1}/3")
-                _time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            break
-        else:
-            print("[ebay] Giving up after 3 rate-limit retries — returning partial results")
+        resp = _browse_get(headers, params)
+        if resp is None:
             return results
+        resp.raise_for_status()
 
         data = resp.json()
         items = data.get("itemSummaries", [])
@@ -105,7 +130,7 @@ def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed", max_re
         offset += limit
         if offset >= total or offset >= max_results:
             break
-        _time.sleep(1)  # polite delay between pages
+        time.sleep(5)  # 5s between listing pages
 
     return results
 
@@ -180,18 +205,15 @@ def _browse_ended(token: str, keywords: str, buying_option: str, cutoff: str, no
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE_ID,
     }
+    resp = _browse_get(headers, {
+        "q": keywords,
+        "filter": f"buyingOptions:{{{buying_option}}},itemEndDate:[{cutoff}..{now_str}]",
+        "limit": 10,
+        "sort": "endingSoonest",
+    })
+    if resp is None:
+        return []
     try:
-        resp = requests.get(
-            BROWSE_URL,
-            headers=headers,
-            params={
-                "q": keywords,
-                "filter": f"buyingOptions:{{{buying_option}}},itemEndDate:[{cutoff}..{now_str}]",
-                "limit": 10,
-                "sort": "endingSoonest",
-            },
-            timeout=10,
-        )
         resp.raise_for_status()
         return resp.json().get("itemSummaries", [])
     except requests.exceptions.RequestException:
@@ -237,7 +259,7 @@ def search_sold_comps(keywords: str, token: str, listing_title: str = "") -> dic
         except (KeyError, TypeError, ValueError):
             continue
 
-    # --- BIN comps ---
+    # --- BIN comps (separate API call — _browse_get already sleeps 2s) ---
     bin_raw = []
     for item in _browse_ended(token, keywords, "FIXED_PRICE", cutoff, now_str):
         try:

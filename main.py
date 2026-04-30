@@ -145,8 +145,12 @@ def _print_opportunity(listing: dict, avg_sold: float, comp_count: int,
 
 # --- Main scan ---
 
+API_CALL_LIMIT = 150
+
+
 def run_scan():
     _check_env()
+    ebay._reset_call_count()
 
     now_uk = datetime.now(UK_TZ)
     yesterday = (now_uk - timedelta(days=1)).date()
@@ -191,6 +195,10 @@ def run_scan():
             if nc.check_already_logged(listing["item_id"]):
                 skipped_logged += 1
                 continue
+
+            if ebay._get_call_count() >= API_CALL_LIMIT:
+                print(f"[scan] API call limit reached — stopping early")
+                break
 
             keywords = extract_search_terms(listing["title"])
             if len(keywords.split()) < 2:
@@ -255,7 +263,8 @@ def run_scan():
     print(
         f"\nScan complete — {total_found} found, {skipped_filter} skipped (filter), "
         f"{skipped_logged} skipped (already logged), {not_viable} not viable, "
-        f"{written_to_notion} written to Notion ({insufficient_data} insufficient sold data)"
+        f"{written_to_notion} written to Notion ({insufficient_data} insufficient sold data) "
+        f"| {ebay._get_call_count()} eBay API calls used"
     )
 
 
@@ -271,5 +280,14 @@ def _schedule_midnight_run():
 
 
 if __name__ == "__main__":
+    if os.getenv("TEST_RUN", "").lower() == "true":
+        print("⛳ TEST_RUN mode — running single scan now...")
+        try:
+            run_scan()
+        except Exception as exc:
+            print(f"[error] Test scan failed: {exc}")
+        print("Test run complete — exiting")
+        sys.exit(0)
+
     print("⛳ Golf Club Arb started — waiting for midnight UK to run scan.")
     _schedule_midnight_run()
