@@ -66,8 +66,7 @@ def _build_listing(item: dict, listing_type: str, shipping: float) -> dict:
 
 
 def _browse_get(headers: dict, params: dict) -> requests.Response | None:
-    """Single rate-limited GET to the Browse API. Returns None if call limit exceeded."""
-    global _api_call_count
+    """Single rate-limited GET to the Browse API."""
     time.sleep(2)  # never more than 1 call per 2 seconds
     for attempt in range(3):
         resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=15)
@@ -82,7 +81,41 @@ def _browse_get(headers: dict, params: dict) -> requests.Response | None:
     return None
 
 
-def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed", max_results: int = 100) -> list[dict]:
+# Targeted search queries replicating the user's eBay saved search:
+# Brands: Callaway, Cleveland, Cobra, J.Lindeberg, Miura, Mizuno, Nike, Ping, PXG,
+#         Scotty Cameron, TaylorMade, Titleist, Wilson, Wilson Staff
+# Types:  Driver, Fairway Wood, Hybrid, Iron Set, Putter, Wedge, Full Set
+# Only sensible brand+type combos — ~50 targeted queries total.
+
+_SEARCH_QUERIES = [
+    # Irons / iron sets (most common arbitrage target)
+    "Callaway irons", "Cleveland irons", "Cobra irons", "Mizuno irons",
+    "Nike irons", "Ping irons", "PXG irons", "TaylorMade irons",
+    "Titleist irons", "Wilson irons", "Wilson Staff irons", "Miura irons",
+    # Drivers
+    "Callaway driver", "Cobra driver", "Mizuno driver", "Nike driver",
+    "Ping driver", "PXG driver", "TaylorMade driver", "Titleist driver",
+    "Wilson driver",
+    # Fairway woods
+    "Callaway fairway wood", "Ping fairway wood", "TaylorMade fairway wood",
+    "Titleist fairway wood", "Cobra fairway wood",
+    # Hybrids
+    "Callaway hybrid", "Ping hybrid", "TaylorMade hybrid", "Titleist hybrid",
+    "Mizuno hybrid", "Cobra hybrid",
+    # Putters
+    "Scotty Cameron putter", "Odyssey putter", "Ping putter",
+    "TaylorMade putter", "Callaway putter", "Cleveland putter",
+    # Wedges
+    "Callaway wedge", "Cleveland wedge", "Titleist Vokey wedge",
+    "TaylorMade wedge", "Ping wedge", "Mizuno wedge",
+    # Full sets
+    "Callaway golf set", "Ping golf set", "TaylorMade golf set",
+    "Titleist golf set", "Cobra golf set",
+]
+
+
+def _browse_search(token: str, query: str, extra_filter: str, sort: str) -> list[dict]:
+    """Paginate a single branded search query, returning all raw items."""
     headers = {
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE_ID,
@@ -93,7 +126,7 @@ def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed", max_re
 
     while True:
         params = {
-            "q": "golf clubs",
+            "q": query,
             "limit": limit,
             "offset": offset,
             "filter": extra_filter,
@@ -103,7 +136,10 @@ def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed", max_re
         resp = _browse_get(headers, params)
         if resp is None:
             return results
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except Exception:
+            return results
 
         data = resp.json()
         items = data.get("itemSummaries", [])
@@ -112,55 +148,63 @@ def _browse_all(token: str, extra_filter: str, sort: str = "newlyListed", max_re
         results.extend(items)
         total = int(data.get("total", 0))
         offset += limit
-        if offset >= total or offset >= max_results:
+        if offset >= total:
             break
-        time.sleep(5)  # 5s between listing pages
+        time.sleep(5)  # polite gap between pages of same query
 
     return results
 
 
-def _uk_day_to_utc_range(day: date) -> tuple[str, str]:
-    """Return UTC ISO start/end strings covering a full UK calendar day (BST/GMT aware)."""
-    utc = ZoneInfo("UTC")
-    start = datetime(day.year, day.month, day.day, 0, 0, 0, tzinfo=UK_TZ).astimezone(utc)
-    end = (start + timedelta(days=1))
+def _utc_range(start_dt: datetime, end_dt: datetime) -> tuple[str, str]:
     fmt = "%Y-%m-%dT%H:%M:%SZ"
-    return start.strftime(fmt), end.strftime(fmt)
+    return start_dt.strftime(fmt), end_dt.strftime(fmt)
 
 
-def search_bin_listings(token: str, yesterday: date) -> list[dict]:
-    """BIN listings posted during the previous UK calendar day."""
-    start_str, end_str = _uk_day_to_utc_range(yesterday)
+def search_all_listings(token: str) -> list[dict]:
+    """Run all targeted brand+type searches and return deduplicated listings.
 
-    raw = _browse_all(
-        token,
-        extra_filter=f"buyingOptions:{{FIXED_PRICE}},itemStartDate:[{start_str}..{end_str}]",
-        sort="newlyListed",
+    BIN: listed in last 24 hours.
+    Auction: ending in next 48 hours.
+    Used condition, UK marketplace only.
+    """
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
+    bin_start, bin_end = _utc_range(now - timedelta(hours=24), now)
+    auc_start, auc_end = _utc_range(now, now + timedelta(hours=48))
+
+    bin_filter = (
+        f"buyingOptions:{{FIXED_PRICE}},"
+        f"conditions:{{USED}},"
+        f"itemStartDate:[{bin_start}..{bin_end}]"
     )
-    listings = []
-    for item in raw:
-        shipping = _get_shipping_cost(item)
-        if shipping is None:
-            continue
-        listings.append(_build_listing(item, "BIN", shipping))
-    return listings
-
-
-def search_auction_listings(token: str, tomorrow: date) -> list[dict]:
-    """Auctions ending on the next UK calendar day only."""
-    start_str, end_str = _uk_day_to_utc_range(tomorrow)
-
-    raw = _browse_all(
-        token,
-        extra_filter=f"buyingOptions:{{AUCTION}},itemEndDate:[{start_str}..{end_str}]",
+    auc_filter = (
+        f"buyingOptions:{{AUCTION}},"
+        f"conditions:{{USED}},"
+        f"itemEndDate:[{auc_start}..{auc_end}]"
     )
-    listings = []
-    for item in raw:
-        shipping = _get_shipping_cost(item)
-        if shipping is None:
-            continue
-        listings.append(_build_listing(item, "Auction", shipping))
-    return listings
+
+    seen: dict[str, dict] = {}
+    total_queries = len(_SEARCH_QUERIES) * 2  # BIN + auction per query
+    done = 0
+
+    for query in _SEARCH_QUERIES:
+        for listing_type, extra_filter, sort in [
+            ("BIN",     bin_filter, "newlyListed"),
+            ("Auction", auc_filter, "endingSoonest"),
+        ]:
+            raw = _browse_search(token, query, extra_filter, sort)
+            done += 1
+            for item in raw:
+                item_id = item.get("itemId", "")
+                if not item_id or item_id in seen:
+                    continue
+                shipping = _get_shipping_cost(item)
+                if shipping is None:
+                    continue
+                seen[item_id] = _build_listing(item, listing_type, shipping)
+            print(f"  [{done}/{total_queries}] {listing_type}: '{query}' → {len(raw)} results")
+
+    return list(seen.values())
 
 
 _IRON_VALUE = {

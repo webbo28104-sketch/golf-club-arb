@@ -149,13 +149,10 @@ def run_scan():
     _check_env()
 
     now_uk = datetime.now(UK_TZ)
-    yesterday = (now_uk - timedelta(days=1)).date()
-    tomorrow = (now_uk + timedelta(days=1)).date()
 
     print(
-        f"\n⛳ Golf Club Arb — midnight run — "
-        f"BIN listings from {yesterday} + auctions ending {tomorrow} — "
-        f"{now_uk.strftime('%Y-%m-%d %H:%M %Z')}"
+        f"\n⛳ Golf Club Arb — {now_uk.strftime('%Y-%m-%d %H:%M %Z')} — "
+        f"BIN last 24h + auctions ending next 48h — used UK clubs only"
     )
 
     try:
@@ -163,15 +160,8 @@ def run_scan():
     except Exception as exc:
         sys.exit(f"[error] Failed to get eBay access token: {exc}")
 
-    bin_listings = ebay.search_bin_listings(token, yesterday)
-    auction_listings = ebay.search_auction_listings(token, tomorrow)
-
-    # Deduplicate by item ID (prefer BIN if somehow duplicated)
-    seen: dict[str, dict] = {}
-    for listing in bin_listings + auction_listings:
-        if listing["item_id"] not in seen:
-            seen[listing["item_id"]] = listing
-    all_listings = list(seen.values())
+    print(f"Running {len(ebay._SEARCH_QUERIES) * 2} targeted searches (BIN + auction per brand/type)...")
+    all_listings = ebay.search_all_listings(token)
 
     total_found = len(all_listings)
     skipped_filter = 0
