@@ -308,7 +308,7 @@ def search_sold_comps(keywords: str, token: str, listing_title: str = "") -> dic
         (False, False, False, "all filters relaxed"),
     ]:
         auction_prices, bin_prices = _extract(check_hand, check_shaft, check_count)
-        if len(auction_prices) >= 3:
+        if len(auction_prices) >= 1:
             if note:
                 filters_relaxed.append(note)
             break

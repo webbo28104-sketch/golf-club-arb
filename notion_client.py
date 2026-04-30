@@ -78,12 +78,12 @@ def _detect_condition(condition_str: str) -> str:
 
 
 def _confidence(comp_count: int, comp_prices: list) -> str:
-    if not comp_prices or comp_count < 3:
+    if not comp_prices or comp_count < 1:
         return "LOW"
     price_range = max(comp_prices) / min(comp_prices) if min(comp_prices) > 0 else 99
-    if comp_count >= 6 and price_range < 1.5:
+    if comp_count >= 5 and price_range < 1.5:
         return "HIGH"
-    if comp_count >= 3:
+    if comp_count >= 2:
         return "MEDIUM"
     return "LOW"
 

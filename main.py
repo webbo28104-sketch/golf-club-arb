@@ -210,9 +210,9 @@ def run_scan():
             club_count_unknown = comps["club_count_unknown"]
             filters_relaxed = comps["filters_relaxed"]
 
-            if auction_count < 3:
+            if auction_count < 1:
                 insufficient_data += 1
-                print(f"\n  ⚠️ Check manually — insufficient auction comps ({auction_count} found, need 3)")
+                print(f"\n  ⚠️ Check manually — no auction comps found")
                 print(f"  {listing['title']}")
                 print(f"  {listing['url']}")
                 continue
