@@ -65,28 +65,12 @@ def _build_listing(item: dict, listing_type: str, shipping: float) -> dict:
     }
 
 
-_api_call_count = 0
-
-
-def _get_call_count() -> int:
-    return _api_call_count
-
-
-def _reset_call_count():
-    global _api_call_count
-    _api_call_count = 0
-
-
-def _browse_get(headers: dict, params: dict, call_limit: int = 150) -> requests.Response | None:
+def _browse_get(headers: dict, params: dict) -> requests.Response | None:
     """Single rate-limited GET to the Browse API. Returns None if call limit exceeded."""
     global _api_call_count
-    if _api_call_count >= call_limit:
-        print(f"[ebay] API call limit ({call_limit}) reached — stopping")
-        return None
     time.sleep(2)  # never more than 1 call per 2 seconds
     for attempt in range(3):
         resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=15)
-        _api_call_count += 1
         if resp.status_code == 429:
             waits = [60, 120, 300]
             wait = waits[attempt]

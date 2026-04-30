@@ -145,12 +145,8 @@ def _print_opportunity(listing: dict, avg_sold: float, comp_count: int,
 
 # --- Main scan ---
 
-API_CALL_LIMIT = 150
-
-
 def run_scan():
     _check_env()
-    ebay._reset_call_count()
 
     now_uk = datetime.now(UK_TZ)
     yesterday = (now_uk - timedelta(days=1)).date()
@@ -183,6 +179,7 @@ def run_scan():
     not_viable = 0
     written_to_notion = 0
     insufficient_data = 0
+    processed = 0
 
     for listing in all_listings:
         try:
@@ -196,9 +193,9 @@ def run_scan():
                 skipped_logged += 1
                 continue
 
-            if ebay._get_call_count() >= API_CALL_LIMIT:
-                print(f"[scan] API call limit reached — stopping early")
-                break
+            processed += 1
+            if processed % 25 == 0:
+                print(f"Processed {processed}/{total_found} listings...")
 
             keywords = extract_search_terms(listing["title"])
             if len(keywords.split()) < 2:
@@ -263,10 +260,10 @@ def run_scan():
             continue
 
     print(
-        f"\nScan complete — {total_found} found, {skipped_filter} skipped (filter), "
-        f"{skipped_logged} skipped (already logged), {not_viable} not viable, "
-        f"{written_to_notion} written to Notion ({insufficient_data} insufficient sold data) "
-        f"| {ebay._get_call_count()} eBay API calls used"
+        f"\nScan complete — {total_found} unique listings found, "
+        f"{skipped_filter} skipped (filter), {skipped_logged} skipped (already logged), "
+        f"{not_viable} not viable, {written_to_notion} written to Notion "
+        f"({insufficient_data} insufficient sold data)"
     )
 
 
