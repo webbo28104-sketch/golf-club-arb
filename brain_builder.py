@@ -25,11 +25,7 @@ load_dotenv()
 
 FINDING_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
 FINDING_SITE_ID = "3"
-FINDING_APP_ID = os.environ.get("EBAY_CLIENT_ID", "")
-
 NOTION_API = "https://api.notion.com/v1"
-NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
-NOTION_BRAIN_REVIEW_DB_ID = os.environ.get("NOTION_BRAIN_REVIEW_DB_ID", "")
 
 
 ROWS_PER_DAY = 13
@@ -424,8 +420,12 @@ def update_notion_page_id(pending_id: int, notion_page_id: str):
 _FINDING_NS = "http://www.ebay.com/marketplace/search/v1/services"
 
 
+_finding_debug_logged = False
+
 def _finding_request(keywords: str, seller_filter: Optional[str], page: int = 1) -> requests.Response:
+    global _finding_debug_logged
     from datetime import timezone as _tz
+    app_id = os.environ.get("EBAY_CLIENT_ID", "")
     now = datetime.now(_tz.utc)
     cutoff = (now - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
@@ -450,14 +450,24 @@ def _finding_request(keywords: str, seller_filter: Optional[str], page: int = 1)
     )
     headers = {
         "X-EBAY-SOA-OPERATION-NAME": "findCompletedItems",
-        "X-EBAY-SOA-SECURITY-APPNAME": FINDING_APP_ID,
+        "X-EBAY-SOA-SECURITY-APPNAME": app_id,
         "X-EBAY-SOA-RESPONSE-DATA-FORMAT": "XML",
         "X-EBAY-SOA-REQUEST-DATA-FORMAT": "XML",
         "Content-Type": "text/xml",
         "X-EBAY-SOA-GLOBAL-ID": "EBAY-GB",
     }
+    if not _finding_debug_logged:
+        _finding_debug_logged = True
+        app_id_preview = app_id[:12] + "..." if len(app_id) > 12 else repr(app_id)
+        print(f"[brain] Finding API debug -- URL: {FINDING_URL}")
+        print(f"[brain] Finding API debug -- App ID: {app_id_preview}")
+        print(f"[brain] Finding API debug -- Headers: {list(headers.keys())}")
+        print(f"[brain] Finding API debug -- Body preview: {body[:200]}")
     time.sleep(1)
-    return requests.post(FINDING_URL, headers=headers, data=body.encode("utf-8"), timeout=20)
+    resp = requests.post(FINDING_URL, headers=headers, data=body.encode("utf-8"), timeout=20)
+    if not _finding_debug_logged or resp.status_code >= 400:
+        print(f"[brain] Finding API response: {resp.status_code} -- {resp.text[:300]}")
+    return resp
 
 
 def _parse_finding_items(xml_text: str) -> list[dict]:
@@ -626,8 +636,9 @@ def compute_pricing(accepted_comps: list[dict]) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def _notion_headers() -> dict:
+    token = os.environ.get("NOTION_TOKEN", "")
     return {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Notion-Version": "2022-06-28",
         "Content-Type": "application/json",
     }
@@ -675,7 +686,9 @@ def _build_evidence_text(result: dict, entry: dict) -> str:
 
 
 def create_notion_review_page(entry: dict, result: dict) -> str:
-    if not NOTION_BRAIN_REVIEW_DB_ID:
+    db_id = os.environ.get("NOTION_BRAIN_REVIEW_DB_ID", "")
+    print(f"[brain] Notion DB ID in use: {repr(db_id)}")
+    if not db_id:
         print("[brain] NOTION_BRAIN_REVIEW_DB_ID not set -- skipping Notion write")
         return ""
 
@@ -705,7 +718,7 @@ def create_notion_review_page(entry: dict, result: dict) -> str:
         resp = requests.post(
             f"{NOTION_API}/pages",
             headers=_notion_headers(),
-            json={"parent": {"database_id": NOTION_BRAIN_REVIEW_DB_ID}, "properties": props},
+            json={"parent": {"database_id": db_id}, "properties": props},
             timeout=15,
         )
         resp.raise_for_status()
