@@ -421,6 +421,8 @@ _FINDING_NS = "http://www.ebay.com/marketplace/search/v1/services"
 
 
 _finding_debug_logged = False
+_finding_call_count = 0
+FINDING_API_DAILY_LIMIT = 100
 
 def _finding_request(keywords: str, seller_filter: Optional[str], page: int = 1) -> requests.Response:
     global _finding_debug_logged
@@ -514,10 +516,18 @@ def _parse_finding_items(xml_text: str) -> list[dict]:
 
 
 def fetch_sold_comps(keywords: str, seller_filter: Optional[str] = None) -> list[dict]:
+    global _finding_call_count
+    if _finding_call_count >= FINDING_API_DAILY_LIMIT:
+        print(f"[brain] Finding API daily limit reached ({FINDING_API_DAILY_LIMIT} calls) -- skipping {keywords!r}")
+        return []
     all_items = []
     for page in range(1, 4):  # max 3 pages = 300 items
+        if _finding_call_count >= FINDING_API_DAILY_LIMIT:
+            print(f"[brain] Finding API daily limit reached mid-fetch -- stopping")
+            break
         try:
             resp = _finding_request(keywords, seller_filter, page)
+            _finding_call_count += 1
             resp.raise_for_status()
         except Exception as exc:
             print(f"[brain] Finding API error page {page}: {exc}")
