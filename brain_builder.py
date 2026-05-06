@@ -710,7 +710,7 @@ def create_notion_review_page(entry: dict, result: dict) -> str:
     is_iron = entry["club_type"] in ("Iron Set", "Wedge Set")
 
     props = {
-        "Title": {"title": [{"text": {"content": title}}]},
+        "Name": {"title": [{"text": {"content": title}}]},
         "Club Type": {"select": {"name": entry["club_type"]}},
         "Make": {"select": {"name": entry["make"]}},
         "Model": {"rich_text": [{"text": {"content": entry["model"]}}]},
