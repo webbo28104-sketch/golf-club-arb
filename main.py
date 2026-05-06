@@ -13,6 +13,9 @@ load_dotenv()
 
 UK_TZ = ZoneInfo("Europe/London")
 MODE = os.getenv("MODE", "learning")
+BRAIN_ENABLED = os.getenv("BRAIN_ENABLED", "false").lower() == "true"
+
+# --- Environment validation ---
 
 REQUIRED_VARS = ["EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET", "NOTION_TOKEN", "NOTION_OPPORTUNITY_DB_ID"]
 
@@ -22,6 +25,8 @@ def _check_env():
     if missing:
         sys.exit(f"[error] Missing required environment variables: {', '.join(missing)}")
 
+
+# --- Filters ---
 
 SKIP_OLD = ["persimmon", "vintage", "hickory", "metal wood", "wooden driver", "wound ball"]
 SKIP_MIXED = ["mixed", "job lot", "various", "assorted", "bundle"]
@@ -64,10 +69,13 @@ def should_skip(listing: dict) -> tuple[bool, str]:
     if any(kw in tl for kw in SKIP_JUNK):
         return True, "junk listing"
     if listing["total_cost"] > MAX_TOTAL_COST:
-        return True, f"total cost exceeds limit"
+        return True, f"total £{listing['total_cost']:.2f} exceeds limit"
     return False, ""
 
 
+# --- Strict comp query extraction ---
+
+# Known models per brand (lowercase for matching)
 _KNOWN_MODELS: dict[str, list[str]] = {
     "titleist":       ["t100", "t150", "t200", "t300", "t350", "ap1", "ap2", "ap3", "cb", "mb",
                        "716", "718", "620", "690"],
@@ -128,13 +136,19 @@ _CLUB_TYPE_PATTERNS = [
     ("hybrid",       ["hybrid"]),
 ]
 
+# Brands whose models are putters by default
 _PUTTER_BRANDS = {"scotty cameron", "odyssey"}
+# Models that are wedges
 _WEDGE_MODELS = {"rtx"}
 
 
 def extract_comp_query(title: str) -> str:
+    """Return '{Brand} {Model} {club_type}' or '{Brand} {club_type}'. Max 4 words.
+    Never includes shaft, flex, grip, condition, or year.
+    """
     tl = title.lower()
 
+    # Find brand (try multi-word first by sorting longest first)
     found_brand_key: str | None = None
     for brand_key in sorted(_KNOWN_MODELS.keys(), key=len, reverse=True):
         if brand_key in tl:
@@ -146,12 +160,14 @@ def extract_comp_query(title: str) -> str:
 
     brand = _BRAND_DISPLAY[found_brand_key]
 
+    # Find model (try multi-word first)
     found_model_key: str | None = None
     for model_key in sorted(_KNOWN_MODELS[found_brand_key], key=len, reverse=True):
         if model_key in tl:
             found_model_key = model_key
             break
 
+    # Detect club type from title
     club_type = ""
     for ct, keywords in _CLUB_TYPE_PATTERNS:
         if any(kw in tl for kw in keywords):
@@ -174,6 +190,8 @@ def extract_comp_query(title: str) -> str:
 
     return " ".join(result.split()[:4])
 
+
+# --- Pricing ---
 
 def _get_divisor(avg_sold: float) -> float:
     if avg_sold < 50:    return 1.25
@@ -205,6 +223,8 @@ def assess_flag(total_cost: float, max_bid: float, avg_sold: float) -> str:
     return "❌ Not viable"
 
 
+# --- Console output ---
+
 def _print_opportunity(listing: dict, avg_sold: float, comp_count: int,
                         max_bid: float, projected_profit: float, roi: float, flag: str):
     print(f"\n  {flag}  {listing['title']}")
@@ -218,7 +238,13 @@ def _print_opportunity(listing: dict, avg_sold: float, comp_count: int,
     print(f"  Profit:   £{projected_profit:.2f}  |  ROI: {roi}%")
 
 
+# --- Main scan ---
+
 def run_scan():
+    if not BRAIN_ENABLED:
+        print("[brain] Listing scanner disabled -- brain not yet enabled. "
+              "Set BRAIN_ENABLED=true when pricing coverage is sufficient.")
+        return
     _check_env()
 
     now_uk = datetime.now(UK_TZ)
@@ -232,6 +258,7 @@ def run_scan():
     except Exception as exc:
         sys.exit(f"[error] Failed to get eBay access token: {exc}")
 
+    # Build price table once at scan start
     price_table, url_table, count_table = ebay.build_price_table(token)
 
     print(f"Running {len(ebay._SEARCH_QUERIES) * 2} targeted searches (BIN + auction per brand/type)...")
@@ -293,13 +320,14 @@ def run_scan():
 
             avg_sold = round(sum(sold_prices) / len(sold_prices), 2)
 
+            # Price sanity checks
             if avg_sold > listing["price"] * 4:
                 print(f"\n  ⚠️ Check manually — comp data suspect (avg £{avg_sold:.0f} is 4x+ listing £{listing['price']:.0f})")
                 print(f"  {listing['title']}")
                 insufficient_data += 1
                 continue
             if avg_sold < listing["price"] * 0.8:
-                print(f"  ❌ {listing['title'][:70]} — overpriced vs comps")
+                print(f"  ❌ {listing['title'][:70]} — overpriced vs comps (listing £{listing['price']:.0f}, avg sold £{avg_sold:.0f})")
                 not_viable += 1
                 continue
 
@@ -348,6 +376,7 @@ def run_scan():
 
 
 def _schedule_midnight_run():
+    """Schedule run_scan to fire at midnight UK time every day."""
     import pytz
     london = pytz.timezone("Europe/London")
     schedule.every().day.at("00:00", london).do(run_scan)
