@@ -387,6 +387,14 @@ def _schedule_midnight_run():
 
 
 if __name__ == "__main__":
+    import brain_builder
+
+    print("[brain] Running startup brain build...")
+    try:
+        brain_builder.run_day()
+    except Exception as exc:
+        print(f"[error] Brain builder failed: {exc}")
+
     print("⛳ Startup scan running...")
     try:
         run_scan()
