@@ -31,7 +31,6 @@ NOTION_API = "https://api.notion.com/v1"
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 NOTION_BRAIN_REVIEW_DB_ID = os.environ.get("NOTION_BRAIN_REVIEW_DB_ID", "")
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 ROWS_PER_DAY = 13
 MIN_PRIVATE_COMPS = 5
@@ -266,9 +265,10 @@ def _detect_year(title: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 def _pg_conn():
-    if not DATABASE_URL:
+    url = os.environ.get("DATABASE_URL", "")
+    if not url:
         raise EnvironmentError("DATABASE_URL is not set")
-    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
+    return psycopg2.connect(url, cursor_factory=psycopg2.extras.DictCursor)
 
 
 def init_tables():
