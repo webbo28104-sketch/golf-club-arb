@@ -736,7 +736,15 @@ def create_notion_review_page(entry: dict, result: dict) -> str:
         print(f"[notion] Created review page: {title}")
         return page_id
     except Exception as exc:
+        body = ""
+        try:
+            body = exc.response.text if hasattr(exc, "response") and exc.response is not None else ""
+        except Exception:
+            pass
         print(f"[notion] Failed to create page for {title}: {exc}")
+        if body:
+            print(f"[notion] Error response body: {body}")
+        print(f"[notion] Payload sent: {json.dumps({'properties': list(props.keys())})}")
         return ""
 
 
