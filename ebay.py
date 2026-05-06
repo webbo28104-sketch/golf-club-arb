@@ -13,7 +13,7 @@ BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 FINDING_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
 
 MARKETPLACE_ID = "EBAY_GB"
-FINDING_SITE_ID = "3"  # UK
+FINDING_SITE_ID = "3"
 
 UK_TZ = ZoneInfo("Europe/London")
 
@@ -40,7 +40,6 @@ def _parse_price(price_dict: dict) -> float:
 
 
 def _get_shipping_cost(item: dict) -> float | None:
-    """Returns shipping cost in GBP, or None if collection-only / no shipping info."""
     options = item.get("shippingOptions", [])
     if not options:
         return None
@@ -66,8 +65,7 @@ def _build_listing(item: dict, listing_type: str, shipping: float) -> dict:
 
 
 def _browse_get(headers: dict, params: dict) -> requests.Response | None:
-    """Single rate-limited GET to the Browse API."""
-    time.sleep(2)  # never more than 1 call per 2 seconds
+    time.sleep(2)
     for attempt in range(3):
         resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=15)
         if resp.status_code == 429:
@@ -81,41 +79,27 @@ def _browse_get(headers: dict, params: dict) -> requests.Response | None:
     return None
 
 
-# Targeted search queries replicating the user's eBay saved search:
-# Brands: Callaway, Cleveland, Cobra, J.Lindeberg, Miura, Mizuno, Nike, Ping, PXG,
-#         Scotty Cameron, TaylorMade, Titleist, Wilson, Wilson Staff
-# Types:  Driver, Fairway Wood, Hybrid, Iron Set, Putter, Wedge, Full Set
-# Only sensible brand+type combos — ~50 targeted queries total.
-
 _SEARCH_QUERIES = [
-    # Irons / iron sets (most common arbitrage target)
     "Callaway irons", "Cleveland irons", "Cobra irons", "Mizuno irons",
     "Nike irons", "Ping irons", "PXG irons", "TaylorMade irons",
     "Titleist irons", "Wilson irons", "Wilson Staff irons", "Miura irons",
-    # Drivers
     "Callaway driver", "Cobra driver", "Mizuno driver", "Nike driver",
     "Ping driver", "PXG driver", "TaylorMade driver", "Titleist driver",
     "Wilson driver",
-    # Fairway woods
     "Callaway fairway wood", "Ping fairway wood", "TaylorMade fairway wood",
     "Titleist fairway wood", "Cobra fairway wood",
-    # Hybrids
     "Callaway hybrid", "Ping hybrid", "TaylorMade hybrid", "Titleist hybrid",
     "Mizuno hybrid", "Cobra hybrid",
-    # Putters
     "Scotty Cameron putter", "Odyssey putter", "Ping putter",
     "TaylorMade putter", "Callaway putter", "Cleveland putter",
-    # Wedges
     "Callaway wedge", "Cleveland wedge", "Titleist Vokey wedge",
     "TaylorMade wedge", "Ping wedge", "Mizuno wedge",
-    # Full sets
     "Callaway golf set", "Ping golf set", "TaylorMade golf set",
     "Titleist golf set", "Cobra golf set",
 ]
 
 
 def _browse_search(token: str, query: str, extra_filter: str, sort: str) -> list[dict]:
-    """Paginate a single branded search query, returning all raw items."""
     headers = {
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": MARKETPLACE_ID,
@@ -150,7 +134,7 @@ def _browse_search(token: str, query: str, extra_filter: str, sort: str) -> list
         offset += limit
         if offset >= total:
             break
-        time.sleep(5)  # polite gap between pages of same query
+        time.sleep(5)
 
     return results
 
@@ -161,12 +145,6 @@ def _utc_range(start_dt: datetime, end_dt: datetime) -> tuple[str, str]:
 
 
 def search_all_listings(token: str) -> list[dict]:
-    """Run all targeted brand+type searches and return deduplicated listings.
-
-    BIN: listed in last 24 hours.
-    Auction: ending in next 48 hours.
-    Used condition, UK marketplace only.
-    """
     from datetime import timezone as _tz
     now = datetime.now(_tz.utc)
     bin_start, bin_end = _utc_range(now - timedelta(hours=24), now)
@@ -184,7 +162,7 @@ def search_all_listings(token: str) -> list[dict]:
     )
 
     seen: dict[str, dict] = {}
-    total_queries = len(_SEARCH_QUERIES) * 2  # BIN + auction per query
+    total_queries = len(_SEARCH_QUERIES) * 2
     done = 0
 
     for query in _SEARCH_QUERIES:
@@ -202,7 +180,7 @@ def search_all_listings(token: str) -> list[dict]:
                 if shipping is None:
                     continue
                 seen[item_id] = _build_listing(item, listing_type, shipping)
-            print(f"  [{done}/{total_queries}] {listing_type}: '{query}' → {len(raw)} results")
+            print(f"  [{done}/{total_queries}] {listing_type}: {query!r} -> {len(raw)} results")
 
     return list(seen.values())
 
@@ -212,12 +190,11 @@ _IRON_VALUE = {
     "pw": 10, "p": 10, "aw": 11, "gw": 11, "sw": 11, "lw": 12, "w": 11,
 }
 
+
 def count_clubs(title: str) -> int | None:
-    """Extract number of clubs in a set from a listing title. Returns None if unknown."""
     import re as _re
     tl = title.lower()
-    # Match patterns like "4-pw", "5-9", "4-aw", "6-sw" etc.
-    m = _re.search(r'\b(\d|pw|aw|gw|sw|lw)\s*[-–]\s*(\d{1,2}|pw|aw|gw|sw|lw)\b', tl)
+    m = _re.search(r'\b(\d|pw|aw|gw|sw|lw)\s*[-]\s*(\d{1,2}|pw|aw|gw|sw|lw)\b', tl)
     if not m:
         return None
     start_str, end_str = m.group(1).strip(), m.group(2).strip()
@@ -238,6 +215,7 @@ def _browse_ended(token: str, keywords: str, buying_option: str, cutoff: str, no
         "filter": f"buyingOptions:{{{buying_option}}},itemEndDate:[{cutoff}..{now_str}]",
         "limit": 10,
         "sort": "endingSoonest",
+        "fieldgroups": "EXTENDED",
     })
     if resp is None:
         return []
@@ -273,14 +251,6 @@ def _detect_shaft(title: str) -> str:
 
 
 def search_sold_comps(keywords: str, token: str, listing_title: str = "") -> dict:
-    """Ended UK auction + BIN listings from last 30 days as sold-price comps.
-
-    Returns dict with keys: prices, auction_count, bin_count, club_count_unknown, filters_relaxed.
-
-    Auctions: bidCount >= 1 only (real hammer prices).
-    BINs: ended FIXED_PRICE, filtered to <= 2x median auction price.
-    Filters: handedness, shaft type, club count ±1. Relaxed progressively if < 3 comps remain.
-    """
     from datetime import timezone as _tz
     import statistics
 
@@ -308,7 +278,6 @@ def search_sold_comps(keywords: str, token: str, listing_title: str = "") -> dic
                 return False
         return True
 
-    # Fetch raw results once
     raw_auction = _browse_ended(token, keywords, "AUCTION", cutoff, now_str)
     raw_bin = _browse_ended(token, keywords, "FIXED_PRICE", cutoff, now_str)
 
@@ -343,7 +312,6 @@ def search_sold_comps(keywords: str, token: str, listing_title: str = "") -> dic
 
         return auctions, bins
 
-    # Try strictest filter first, relax progressively until we have 3+ auction comps
     filters_relaxed = []
     for check_hand, check_shaft, check_count, note in [
         (True,  True,  True,  None),
@@ -365,4 +333,255 @@ def search_sold_comps(keywords: str, token: str, listing_title: str = "") -> dic
         "bin_count": len(bin_prices),
         "club_count_unknown": club_count_unknown,
         "filters_relaxed": filters_relaxed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# PRE-BUILT COMP PRICE TABLE
+# ---------------------------------------------------------------------------
+
+_PRICE_TABLE_COMBOS = [
+    ("Titleist T100 irons",    "Titleist T100 irons"),
+    ("Titleist T150 irons",    "Titleist T150 irons"),
+    ("Titleist T200 irons",    "Titleist T200 irons"),
+    ("Titleist T300 irons",    "Titleist T300 irons"),
+    ("Titleist T350 irons",    "Titleist T350 irons"),
+    ("Titleist AP1 irons",     "Titleist AP1 irons"),
+    ("Titleist AP2 irons",     "Titleist AP2 irons"),
+    ("Titleist AP3 irons",     "Titleist AP3 irons"),
+    ("Titleist CB irons",      "Titleist CB irons"),
+    ("Titleist MB irons",      "Titleist MB irons"),
+    ("Titleist 716 irons",     "Titleist 716 irons"),
+    ("Titleist 718 irons",     "Titleist 718 irons"),
+    ("Titleist 620 irons",     "Titleist 620 irons"),
+    ("Titleist 690 irons",     "Titleist 690 irons"),
+    ("TaylorMade P790 irons",  "TaylorMade P790 irons"),
+    ("TaylorMade P770 irons",  "TaylorMade P770 irons"),
+    ("TaylorMade P760 irons",  "TaylorMade P760 irons"),
+    ("TaylorMade P730 irons",  "TaylorMade P730 irons"),
+    ("TaylorMade SIM irons",   "TaylorMade SIM irons"),
+    ("TaylorMade SIM2 irons",  "TaylorMade SIM2 irons"),
+    ("TaylorMade Stealth irons","TaylorMade Stealth irons"),
+    ("TaylorMade Qi10 irons",  "TaylorMade Qi10 irons"),
+    ("TaylorMade Burner irons","TaylorMade Burner irons"),
+    ("TaylorMade BRNR irons",  "TaylorMade BRNR irons"),
+    ("Callaway Apex irons",    "Callaway Apex irons"),
+    ("Callaway Rogue irons",   "Callaway Rogue irons"),
+    ("Callaway Mavrik irons",  "Callaway Mavrik irons"),
+    ("Callaway Epic irons",    "Callaway Epic irons"),
+    ("Callaway X Forged irons","Callaway X Forged irons"),
+    ("Callaway Big Bertha irons","Callaway Big Bertha irons"),
+    ("Callaway Steelhead irons","Callaway Steelhead irons"),
+    ("Callaway Razr irons",    "Callaway Razr irons"),
+    ("Ping G425 irons",        "Ping G425 irons"),
+    ("Ping G410 irons",        "Ping G410 irons"),
+    ("Ping G400 irons",        "Ping G400 irons"),
+    ("Ping G700 irons",        "Ping G700 irons"),
+    ("Ping i230 irons",        "Ping i230 irons"),
+    ("Ping i210 irons",        "Ping i210 irons"),
+    ("Ping i500 irons",        "Ping i500 irons"),
+    ("Ping i525 irons",        "Ping i525 irons"),
+    ("Ping Blueprint irons",   "Ping Blueprint irons"),
+    ("Ping S159 irons",        "Ping S159 irons"),
+    ("Mizuno JPX 923 irons",   "Mizuno JPX 923 irons"),
+    ("Mizuno JPX 921 irons",   "Mizuno JPX 921 irons"),
+    ("Mizuno JPX 919 irons",   "Mizuno JPX 919 irons"),
+    ("Mizuno MP 20 irons",     "Mizuno MP 20 irons"),
+    ("Mizuno MP 18 irons",     "Mizuno MP 18 irons"),
+    ("Mizuno MP 25 irons",     "Mizuno MP 25 irons"),
+    ("Mizuno Pro 223 irons",   "Mizuno Pro 223 irons"),
+    ("Mizuno Pro 225 irons",   "Mizuno Pro 225 irons"),
+    ("Mizuno Pro 241 irons",   "Mizuno Pro 241 irons"),
+    ("Mizuno Pro 243 irons",   "Mizuno Pro 243 irons"),
+    ("Cobra King irons",       "Cobra King irons"),
+    ("Cobra Aerojet irons",    "Cobra Aerojet irons"),
+    ("Cobra LTDx irons",       "Cobra LTDx irons"),
+    ("Cobra Speedzone irons",  "Cobra Speedzone irons"),
+    ("Cobra F9 irons",         "Cobra F9 irons"),
+    ("Srixon ZX5 irons",       "Srixon ZX5 irons"),
+    ("Srixon ZX7 irons",       "Srixon ZX7 irons"),
+    ("Srixon ZX Mk II irons",  "Srixon ZX Mk II irons"),
+    ("Srixon Z785 irons",      "Srixon Z785 irons"),
+    ("Srixon Z585 irons",      "Srixon Z585 irons"),
+    ("Cleveland Launcher irons","Cleveland Launcher irons"),
+    ("Cleveland ZipCore irons","Cleveland ZipCore irons"),
+    ("Cleveland RTX wedge",    "Cleveland RTX wedge"),
+    ("Scotty Cameron Newport putter",       "Scotty Cameron Newport putter"),
+    ("Scotty Cameron Phantom putter",       "Scotty Cameron Phantom putter"),
+    ("Scotty Cameron Special Select putter","Scotty Cameron Special Select putter"),
+    ("Scotty Cameron Fastback putter",      "Scotty Cameron Fastback putter"),
+    ("Odyssey White Hot putter","Odyssey White Hot putter"),
+    ("Odyssey Tri-Hot putter", "Odyssey Tri-Hot putter"),
+    ("Odyssey Eleven putter",  "Odyssey Eleven putter"),
+    ("Odyssey Ten putter",     "Odyssey Ten putter"),
+    ("Wilson Staff Model irons","Wilson Staff Model irons"),
+    ("Wilson D9 irons",        "Wilson D9 irons"),
+    ("Wilson D7 irons",        "Wilson D7 irons"),
+    ("Nike VR Pro irons",      "Nike VR Pro irons"),
+    ("Nike Vapor irons",       "Nike Vapor irons"),
+    ("Nike VR_S irons",        "Nike VR_S irons"),
+    ("PXG 0311 irons",         "PXG 0311 irons"),
+    ("PXG 0311P irons",        "PXG 0311P irons"),
+    ("PXG 0311T irons",        "PXG 0311T irons"),
+    ("PXG 0311XF irons",       "PXG 0311XF irons"),
+    ("Titleist irons",         "Titleist irons"),
+    ("Titleist driver",        "Titleist driver"),
+    ("Titleist putter",        "Titleist putter"),
+    ("TaylorMade irons",       "TaylorMade irons"),
+    ("TaylorMade driver",      "TaylorMade driver"),
+    ("TaylorMade putter",      "TaylorMade putter"),
+    ("Callaway irons",         "Callaway irons"),
+    ("Callaway driver",        "Callaway driver"),
+    ("Callaway putter",        "Callaway putter"),
+    ("Ping irons",             "Ping irons"),
+    ("Ping driver",            "Ping driver"),
+    ("Ping putter",            "Ping putter"),
+    ("Mizuno irons",           "Mizuno irons"),
+    ("Mizuno driver",          "Mizuno driver"),
+    ("Cobra irons",            "Cobra irons"),
+    ("Cobra driver",           "Cobra driver"),
+    ("Srixon irons",           "Srixon irons"),
+    ("Cleveland irons",        "Cleveland irons"),
+    ("Cleveland wedge",        "Cleveland wedge"),
+    ("Scotty Cameron putter",  "Scotty Cameron putter"),
+    ("Odyssey putter",         "Odyssey putter"),
+    ("Wilson irons",           "Wilson irons"),
+    ("PXG irons",              "PXG irons"),
+]
+
+
+def _remove_outliers(prices: list, urls: list, counts: list) -> tuple[list, list, list]:
+    import statistics
+    if len(prices) < 2:
+        return prices, urls, counts
+    med = statistics.median(prices)
+    lo, hi = med * 0.25, med * 3.0
+    filtered = [(p, u, c) for p, u, c in zip(prices, urls, counts) if lo <= p <= hi]
+    if not filtered:
+        return prices, urls, counts
+    fp, fu, fc = zip(*filtered)
+    return list(fp), list(fu), list(fc)
+
+
+def build_price_table(token: str) -> tuple[dict, dict, dict]:
+    from datetime import timezone as _tz
+
+    now = datetime.now(_tz.utc)
+    cutoff = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    price_table: dict[str, list] = {}
+    url_table: dict[str, list] = {}
+    count_table: dict[str, list] = {}
+
+    total = len(_PRICE_TABLE_COMBOS)
+    total_comps = 0
+
+    print(f"Building price table: {total} brand/model combinations...")
+
+    for i, (key, query) in enumerate(_PRICE_TABLE_COMBOS):
+        raw = _browse_ended(token, query, "AUCTION", cutoff, now_str)
+
+        prices: list[float] = []
+        urls: list[str] = []
+        counts: list[int | None] = []
+
+        for item in raw:
+            try:
+                if int(item.get("bidCount", 0)) < 1:
+                    continue
+                price = float(item["currentBidPrice"]["value"])
+                url = item.get("itemWebUrl", "")
+                cnt = count_clubs(item.get("title", ""))
+                prices.append(price)
+                urls.append(url)
+                counts.append(cnt)
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        if len(prices) >= 2:
+            prices, urls, counts = _remove_outliers(prices, urls, counts)
+
+        price_table[key] = prices
+        url_table[key] = urls
+        count_table[key] = counts
+        total_comps += len(prices)
+
+        if (i + 1) % 20 == 0 or (i + 1) == total:
+            print(f"  [{i + 1}/{total}] {total_comps} comps so far...")
+
+        time.sleep(1)
+
+    print(f"Price table built: {total} combinations, {total_comps} total comps")
+    return price_table, url_table, count_table
+
+
+def lookup_comps_from_table(
+    title: str,
+    comp_query: str,
+    price_table: dict,
+    url_table: dict,
+    count_table: dict,
+) -> dict:
+    listing_count = count_clubs(title)
+    is_iron_set = listing_count is not None and listing_count >= 4
+
+    key = comp_query
+    if key not in price_table or not price_table[key]:
+        parts = comp_query.split()
+        brand = parts[0] if parts else ""
+        if len(parts) > 1 and f"{parts[0]} {parts[1]}".lower() in ("scotty cameron",):
+            brand = f"{parts[0]} {parts[1]}"
+        tl = title.lower()
+        matched = False
+        for ct in ["irons", "putter", "driver", "wedge", "fairway wood", "hybrid"]:
+            if ct in tl:
+                generic_key = f"{brand} {ct}"
+                if generic_key in price_table and price_table[generic_key]:
+                    key = generic_key
+                    matched = True
+                    break
+        if not matched:
+            generic_key = f"{brand} irons"
+            if generic_key in price_table and price_table[generic_key]:
+                key = generic_key
+
+    if key not in price_table or not price_table[key]:
+        return {
+            "prices": [], "urls": [], "auction_count": 0, "bin_count": 0,
+            "club_count_unknown": listing_count is None,
+            "filters_relaxed": [], "no_match": True,
+        }
+
+    prices = list(price_table[key])
+    urls = list(url_table[key])
+    counts = list(count_table[key])
+    filters_relaxed = []
+
+    if listing_count is not None and prices:
+        filtered = [
+            (p, u, c) for p, u, c in zip(prices, urls, counts)
+            if c is None or abs(c - listing_count) <= 1
+        ]
+        if filtered:
+            prices, urls, counts = map(list, zip(*filtered))
+        else:
+            filters_relaxed.append("club count filter relaxed")
+
+    if is_iron_set and prices:
+        filtered2 = [(p, u, c) for p, u, c in zip(prices, urls, counts) if p >= 30]
+        if filtered2:
+            prices, urls, counts = map(list, zip(*filtered2))
+
+    if len(prices) >= 2:
+        prices, urls, counts = _remove_outliers(prices, urls, counts)
+
+    return {
+        "prices": prices,
+        "urls": urls[:5],
+        "auction_count": len(prices),
+        "bin_count": 0,
+        "club_count_unknown": listing_count is None,
+        "filters_relaxed": filters_relaxed,
+        "no_match": False,
     }
