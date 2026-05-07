@@ -517,28 +517,159 @@ def _parse_finding_items(xml_text: str) -> list[dict]:
     return items
 
 
+_SCRAPE_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+_EBAY_SCRAPE_BASE = "https://www.ebay.co.uk/sch/i.html"
+
+
+def _scrape_sold_comps(keywords: str, seller_filter: Optional[str] = None) -> list[dict]:
+    """Scrape eBay UK completed/sold listings as fallback when Finding API is rate-limited."""
+    from bs4 import BeautifulSoup
+    import urllib.parse
+
+    all_items: list[dict] = []
+    for page in range(1, 4):  # max 3 pages
+        params: dict = {
+            "_nkw": keywords,
+            "_sacat": "0",
+            "LH_Sold": "1",
+            "LH_Complete": "1",
+            "LH_ItemCondition": "3000",
+            "_sop": "13",
+            "_pgn": str(page),
+        }
+        if seller_filter == "golfbidder":
+            params["_ssn"] = "golfbidder"
+        # exclude_golfbidder has no direct URL param — filter post-scrape
+
+        url = _EBAY_SCRAPE_BASE + "?" + urllib.parse.urlencode(params)
+        print(f"[brain] Scrape fallback page {page}: {url[:120]}")
+        try:
+            resp = requests.get(url, headers={"User-Agent": _SCRAPE_UA}, timeout=20)
+            resp.raise_for_status()
+        except Exception as exc:
+            print(f"[brain] Scrape error page {page}: {exc}")
+            break
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items_on_page = 0
+        for li in soup.select("li.s-item"):
+            try:
+                title_el = li.select_one(".s-item__title")
+                if not title_el:
+                    continue
+                title = title_el.get_text(strip=True)
+                if title.lower() in ("shop on ebay", "results matching fewer words"):
+                    continue
+
+                price_el = li.select_one(".s-item__price")
+                if not price_el:
+                    continue
+                price_text = price_el.get_text(strip=True).replace("£", "").replace(",", "").split()[0]
+                price = float(price_text)
+
+                url_el = li.select_one("a.s-item__link")
+                item_url = url_el["href"].split("?")[0] if url_el else ""
+
+                date_el = li.select_one(".s-item__ended-date, .s-item__listingDate, .POSITIVE")
+                end_time = date_el.get_text(strip=True) if date_el else ""
+
+                seller_el = li.select_one(".s-item__seller-info-text")
+                seller_name = seller_el.get_text(strip=True).lower() if seller_el else ""
+
+                shipping_el = li.select_one(".s-item__shipping")
+                shipping_text = shipping_el.get_text(strip=True) if shipping_el else ""
+                if "free" in shipping_text.lower():
+                    shipping = 0.0
+                else:
+                    ship_match = re.search(r"£([\d.]+)", shipping_text)
+                    shipping = float(ship_match.group(1)) if ship_match else 0.0
+
+                if seller_filter == "exclude_golfbidder" and "golfbidder" in seller_name:
+                    continue
+
+                all_items.append({
+                    "title": title,
+                    "price": price,
+                    "shipping": shipping,
+                    "total_price": price + shipping,
+                    "bid_count": 0,
+                    "listing_type": "FixedPrice",
+                    "seller": seller_name,
+                    "feedback_score": 0,
+                    "item_id": item_url.split("/")[-1] if item_url else "",
+                    "url": item_url,
+                    "end_time": end_time,
+                    "condition_text": "",
+                })
+                items_on_page += 1
+            except Exception:
+                continue
+
+        print(f"[brain] Scrape page {page}: {items_on_page} items")
+        if items_on_page == 0:
+            break
+        time.sleep(2)
+
+    print(f"[brain] Scrape fallback total: {len(all_items)} items for {keywords!r}")
+    return all_items
+
+
+def _is_rate_limit_error(xml_text: str) -> bool:
+    """Return True if the Finding API response contains errorId 10001."""
+    try:
+        root = ET.fromstring(xml_text)
+        ns = {"e": _FINDING_NS}
+        for code_el in root.findall(".//e:errorId", ns):
+            if code_el.text and code_el.text.strip() == "10001":
+                return True
+    except ET.ParseError:
+        pass
+    return False
+
+
 def fetch_sold_comps(keywords: str, seller_filter: Optional[str] = None) -> list[dict]:
     global _finding_call_count
     if _finding_call_count >= FINDING_API_DAILY_LIMIT:
-        print(f"[brain] Finding API daily limit reached ({FINDING_API_DAILY_LIMIT} calls) -- skipping {keywords!r}")
-        return []
+        print(f"[brain] Finding API daily limit reached -- using scrape fallback for {keywords!r}")
+        return _scrape_sold_comps(keywords, seller_filter)
+
     all_items = []
+    rate_limited = False
     for page in range(1, 4):  # max 3 pages = 300 items
         if _finding_call_count >= FINDING_API_DAILY_LIMIT:
             print(f"[brain] Finding API daily limit reached mid-fetch -- stopping")
+            rate_limited = True
             break
         try:
             resp = _finding_request(keywords, seller_filter, page)
             _finding_call_count += 1
-            resp.raise_for_status()
         except Exception as exc:
             print(f"[brain] Finding API error page {page}: {exc}")
             break
+
+        if resp.status_code == 500 and _is_rate_limit_error(resp.text):
+            print(f"[brain] Finding API rate limited (error 10001) -- switching to scrape fallback")
+            rate_limited = True
+            break
+
+        try:
+            resp.raise_for_status()
+        except Exception as exc:
+            print(f"[brain] Finding API HTTP error page {page}: {exc}")
+            break
+
         items = _parse_finding_items(resp.text)
         if not items:
             break
         all_items.extend(items)
         time.sleep(3)  # throttle: avoid per-second rate limit (error 10001)
+
+    if rate_limited and not all_items:
+        return _scrape_sold_comps(keywords, seller_filter)
     return all_items
 
 
