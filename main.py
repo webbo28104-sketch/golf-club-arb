@@ -1,11 +1,13 @@
 import os
 import re
 import sys
+import threading
 import schedule
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+from flask import Flask, jsonify, request
 import ebay
 import notion_client as nc
 
@@ -396,8 +398,45 @@ def _schedule_midnight_run():
         time.sleep(30)
 
 
+# --- Flask web server ---
+
+_flask_app = Flask(__name__)
+_BRAIN_RUN_TOKEN = os.getenv("BRAIN_RUN_TOKEN", "Mollybuster456!")
+
+
+@_flask_app.route("/run-brain")
+def _run_brain_endpoint():
+    token = request.args.get("token", "")
+    if token != _BRAIN_RUN_TOKEN:
+        return jsonify({"status": "forbidden", "message": "Invalid token"}), 403
+
+    def _bg():
+        import brain_builder
+        print("[brain] Manual /run-brain triggered")
+        try:
+            brain_builder.run_day()
+        except Exception as exc:
+            print(f"[error] Manual brain run failed: {exc}")
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return jsonify({"status": "started", "message": "Brain run triggered - check Railway logs"})
+
+
+@_flask_app.route("/health")
+def _health():
+    return jsonify({"status": "ok"})
+
+
+def _start_flask():
+    port = int(os.getenv("PORT", 8080))
+    _flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+
 if __name__ == "__main__":
     import brain_builder
+
+    threading.Thread(target=_start_flask, daemon=True).start()
+    print(f"[web] Flask listening on port {os.getenv('PORT', 8080)}")
 
     print("[brain] Running startup brain build...")
     try:

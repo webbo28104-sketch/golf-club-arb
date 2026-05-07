@@ -4,3 +4,4 @@ schedule
 notion-client
 pytz
 psycopg2-binary
+flask
