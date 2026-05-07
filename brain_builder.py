@@ -536,7 +536,7 @@ def fetch_sold_comps(keywords: str, seller_filter: Optional[str] = None) -> list
         if not items:
             break
         all_items.extend(items)
-        time.sleep(0.5)
+        time.sleep(3)  # throttle: avoid per-second rate limit (error 10001)
     return all_items
 
 
@@ -853,7 +853,7 @@ def run_day():
             if notion_page_id:
                 update_notion_page_id(pending_id, notion_page_id)
             mark_done(queue_id)
-            time.sleep(2)  # polite gap between entries
+            time.sleep(5)  # throttle gap between entries
         except Exception as exc:
             print(f"  [brain] Error on {entry['make']} {entry['model']}: {exc}")
             mark_done(queue_id)  # mark done anyway to avoid infinite retry
