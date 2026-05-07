@@ -375,11 +375,21 @@ def run_scan():
     )
 
 
+def _midnight_job():
+    import brain_builder
+    print("[brain] Running midnight brain build...")
+    try:
+        brain_builder.run_day()
+    except Exception as exc:
+        print(f"[error] Brain builder failed: {exc}")
+    run_scan()
+
+
 def _schedule_midnight_run():
-    """Schedule run_scan to fire at midnight UK time every day."""
+    """Schedule brain build + scan to fire at midnight UK time every day."""
     import pytz
     london = pytz.timezone("Europe/London")
-    schedule.every().day.at("00:00", london).do(run_scan)
+    schedule.every().day.at("00:00", london).do(_midnight_job)
     print(f"⛳ Next scheduled run: midnight UK time")
     while True:
         schedule.run_pending()
