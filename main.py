@@ -441,16 +441,8 @@ def _health():
     return jsonify({"status": "ok"})
 
 
-def _start_flask():
-    port = int(os.getenv("PORT", 8080))
-    _flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
-if __name__ == "__main__":
+def _startup_and_schedule():
     import brain_builder
-
-    threading.Thread(target=_start_flask, daemon=True).start()
-    print(f"[web] Flask listening on port {os.getenv('PORT', 8080)}")
 
     print("[brain] Running startup brain build...")
     try:
@@ -465,3 +457,11 @@ if __name__ == "__main__":
         print(f"[error] Startup scan failed: {exc}")
 
     _schedule_midnight_run()
+
+
+if __name__ == "__main__":
+    threading.Thread(target=_startup_and_schedule, daemon=True).start()
+
+    port = int(os.environ.get("PORT", 5000))
+    print(f"[web] Flask listening on port {port}")
+    _flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
