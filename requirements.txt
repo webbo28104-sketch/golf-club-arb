@@ -5,5 +5,3 @@ notion-client
 pytz
 psycopg2-binary
 flask
-beautifulsoup4
-cloudscraper

@@ -10,7 +10,6 @@ import json
 import time
 import re
 import statistics
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -23,8 +22,6 @@ import ebay
 
 load_dotenv()
 
-FINDING_URL = "https://svcs.ebay.com/services/search/FindingService/v1"
-FINDING_SITE_ID = "3"
 NOTION_API = "https://api.notion.com/v1"
 
 
@@ -423,419 +420,106 @@ def update_notion_page_id(pending_id: int, notion_page_id: str):
 
 
 # ---------------------------------------------------------------------------
-# EBAY FINDING API -- COMPLETED ITEMS
+# EBAY BROWSE API -- SOLD COMPS
 # ---------------------------------------------------------------------------
 
-_FINDING_NS = "http://www.ebay.com/marketplace/search/v1/services"
+BROWSE_API_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+_browse_token_cache: dict = {}
 
 
-_finding_call_count = 0
-FINDING_API_DAILY_LIMIT = 100
+def _get_browse_token() -> str:
+    """Return a cached Browse API OAuth token, refreshing if expired."""
+    import time as _time
+    now = _time.time()
+    if _browse_token_cache.get("token") and now < _browse_token_cache.get("expires_at", 0) - 60:
+        return _browse_token_cache["token"]
+    token = ebay.get_access_token()
+    _browse_token_cache["token"] = token
+    _browse_token_cache["expires_at"] = now + 7000  # eBay tokens last ~2h
+    return token
 
-def _finding_request(keywords: str, seller_filter: Optional[str], page: int = 1) -> requests.Response:
-    from datetime import timezone as _tz
-    app_id = os.environ.get("EBAY_CLIENT_ID", "")
-    now = datetime.now(_tz.utc)
-    cutoff = (now - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-    seller_xml = ""
-    if seller_filter == "golfbidder":
-        seller_xml = "<itemFilter><name>Seller</name><value>golfbidder</value></itemFilter>"
-    elif seller_filter == "exclude_golfbidder":
-        seller_xml = "<itemFilter><name>ExcludeSeller</name><value>golfbidder</value></itemFilter>"
-
-    body = (
-        f'<?xml version="1.0" encoding="utf-8"?>'
-        f'<findCompletedItemsRequest xmlns="http://www.ebay.com/marketplace/search/v1/services">'
-        f'<keywords>{keywords}</keywords>'
-        f'<itemFilter><name>SoldItemsOnly</name><value>true</value></itemFilter>'
-        f'<itemFilter><name>MinPrice</name><value>30</value>'
-        f'<paramName>Currency</paramName><paramValue>GBP</paramValue></itemFilter>'
-        f'<itemFilter><name>EndTimeFrom</name><value>{cutoff}</value></itemFilter>'
-        f'{seller_xml}'
-        f'<sortOrder>EndTimeSoonest</sortOrder>'
-        f'<pagination><entriesPerPage>100</entriesPerPage><pageNumber>{page}</pageNumber></pagination>'
-        f'</findCompletedItemsRequest>'
-    )
+def fetch_sold_comps(keywords: str, seller_filter: Optional[str] = None) -> list[dict]:
+    """Fetch recently sold eBay UK listings via Browse API."""
+    token = _get_browse_token()
     headers = {
-        "X-EBAY-SOA-OPERATION-NAME": "findCompletedItems",
-        "X-EBAY-SOA-SECURITY-APPNAME": app_id,
-        "X-EBAY-SOA-RESPONSE-DATA-FORMAT": "XML",
-        "X-EBAY-SOA-REQUEST-DATA-FORMAT": "XML",
-        "Content-Type": "text/xml",
-        "X-EBAY-SOA-GLOBAL-ID": "EBAY-GB",
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
+        "X-EBAY-C-ENDUSERCTX": "contextualLocation=country=GB",
     }
-    app_id_preview = app_id[:12] + "..." if len(app_id) > 12 else repr(app_id)
-    print(f"[brain] Finding API call -- URL: {FINDING_URL}")
-    print(f"[brain] Finding API call -- headers: { {k: (v if k != 'X-EBAY-SOA-SECURITY-APPNAME' else app_id_preview) for k, v in headers.items()} }")
-    print(f"[brain] Finding API call -- body[:120]: {body[:120]}")
-    resp = requests.post(FINDING_URL, headers=headers, data=body.encode("utf-8"), timeout=20)
-    print(f"[brain] Finding API response: {resp.status_code} -- {resp.text[:300]}")
-    return resp
 
-
-def _parse_finding_items(xml_text: str) -> list[dict]:
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        return []
-    ns = {"e": _FINDING_NS}
-    items = []
-    for item in root.findall(".//e:item", ns):
-        def _txt(tag):
-            el = item.find(f"e:{tag}", ns)
-            return el.text.strip() if el is not None and el.text else ""
-        try:
-            price_el = item.find(".//e:currentPrice", ns)
-            price = float(price_el.text) if price_el is not None else 0.0
-            shipping_el = item.find(".//e:shippingServiceCost", ns)
-            shipping = float(shipping_el.text) if shipping_el is not None else 0.0
-            bid_el = item.find(".//e:bidCount", ns)
-            bid_count = int(bid_el.text) if bid_el is not None else 0
-            listing_type_el = item.find(".//e:listingType", ns)
-            listing_type = listing_type_el.text if listing_type_el is not None else ""
-            seller_el = item.find(".//e:sellerInfo/e:sellerUserName", ns)
-            seller_name = seller_el.text.lower() if seller_el is not None and seller_el.text else ""
-            feedback_el = item.find(".//e:sellerInfo/e:feedbackScore", ns)
-            feedback_score = int(feedback_el.text) if feedback_el is not None and feedback_el.text else 0
-            items.append({
-                "title": _txt("title"),
-                "price": price,
-                "shipping": shipping,
-                "total_price": price + shipping,
-                "bid_count": bid_count,
-                "listing_type": listing_type,
-                "seller": seller_name,
-                "feedback_score": feedback_score,
-                "item_id": _txt("itemId"),
-                "url": _txt("viewItemURL"),
-                "end_time": _txt("endTime"),
-                "condition_text": _txt("conditionDisplayName"),
-            })
-        except (ValueError, TypeError):
-            continue
-    return items
-
-
-_SCRAPE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-GB,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-}
-_EBAY_SCRAPE_BASE = "https://www.ebay.co.uk/sch/i.html"
-
-# Known dealer eBay seller names — exclude from private sold comps
-_DEALER_EBAY_SELLERS = {"golfbidder", "cashforeclubs", "golfavenue"}
-
-_DEALER_SITES = [
-    {
-        "name": "Golf Bidder",
-        # Use category listing page — more accessible than search endpoint
-        "search_url": "https://www.golfbidder.co.uk/used-golf-clubs?q={query}",
-        "price_selectors": [".product-price", ".price", "[class*='price']"],
-        "title_selectors": [".product-title", ".product-name", "h2", "h3"],
-        "condition_selectors": [".condition", "[class*='condition']", ".product-condition"],
-    },
-    {
-        "name": "Cash Fore Clubs",
-        "search_url": "https://www.cashforeclubs.co.uk/search?q={query}",
-        "price_selectors": [".price", ".product-price", "[class*='price']"],
-        "title_selectors": [".product-title", ".product-name", "h2", "h3"],
-        "condition_selectors": [".condition", "[class*='condition']"],
-    },
-    {
-        "name": "Golf Avenue",
-        "search_url": "https://www.golfavenue.co.uk/search?q={query}",
-        "price_selectors": [".price", ".product-price", "[class*='price']"],
-        "title_selectors": [".product-title", ".product-name", "h2", "h3"],
-        "condition_selectors": [".condition", "[class*='condition']"],
-    },
-]
-
-
-def _extract_gbp(text: str) -> Optional[float]:
-    """Extract first GBP price from a string."""
-    m = re.search(r"£\s*([\d,]+(?:\.\d{1,2})?)", text)
-    if m:
-        return float(m.group(1).replace(",", ""))
-    return None
-
-
-def _scrape_one_dealer(site: dict, keywords: str) -> list[dict]:
-    """Scrape a single dealer site and return list of {source, title, condition, price}."""
-    import cloudscraper
-    from bs4 import BeautifulSoup
-    import urllib.parse
-
-    url = site["search_url"].format(query=urllib.parse.quote_plus(keywords))
-    print(f"[brain] Dealer scrape: {site['name']} -- {url}")
-    try:
-        scraper = cloudscraper.create_scraper()
-        resp = scraper.get(url, headers=_SCRAPE_HEADERS, timeout=20)
-        resp.raise_for_status()
-    except Exception as exc:
-        print(f"[brain] Dealer scrape failed ({site['name']}): {exc}")
-        return []
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    results = []
-
-    # Try to find product cards — common patterns across Shopify/WooCommerce sites
-    cards = (
-        soup.select(".product-item") or
-        soup.select(".product-card") or
-        soup.select(".product") or
-        soup.select("[class*='product-item']") or
-        soup.select("li.grid__item") or      # Shopify
-        soup.select(".collection-item") or
-        soup.select("article") or
-        soup.select(".woocommerce-LoopProduct") or  # WooCommerce
-        []
-    )
-
-    if not cards:
-        # Fallback: look for any price on the page with nearby title
-        prices_found = []
-        for el in soup.select(", ".join(site["price_selectors"])):
-            price = _extract_gbp(el.get_text())
-            if price and price > 10:
-                # Try to find a nearby title
-                parent = el.find_parent(["li", "div", "article", "section"])
-                title_text = ""
-                if parent:
-                    for sel in site["title_selectors"]:
-                        t = parent.select_one(sel)
-                        if t:
-                            title_text = t.get_text(strip=True)
-                            break
-                if not title_text:
-                    title_text = keywords
-                prices_found.append({
-                    "source": site["name"],
-                    "title": title_text[:100],
-                    "condition": "",
-                    "price": price,
-                })
-        if prices_found:
-            print(f"[brain] Dealer scrape ({site['name']}): {len(prices_found)} prices via fallback")
-        return prices_found[:10]
-
-    for card in cards[:20]:
-        try:
-            title_text = ""
-            for sel in site["title_selectors"]:
-                t = card.select_one(sel)
-                if t:
-                    title_text = t.get_text(strip=True)
-                    break
-            if not title_text:
-                continue
-
-            price = None
-            for sel in site["price_selectors"]:
-                p = card.select_one(sel)
-                if p:
-                    price = _extract_gbp(p.get_text())
-                    if price:
-                        break
-            if not price or price < 10:
-                continue
-
-            condition_text = ""
-            for sel in site["condition_selectors"]:
-                c = card.select_one(sel)
-                if c:
-                    condition_text = c.get_text(strip=True)
-                    break
-
-            results.append({
-                "source": site["name"],
-                "title": title_text[:100],
-                "condition": condition_text[:50],
-                "price": price,
-            })
-        except Exception:
-            continue
-
-    print(f"[brain] Dealer scrape ({site['name']}): {len(results)} results")
-    return results
-
-
-def scrape_dealer_ceiling_prices(keywords: str) -> list[dict]:
-    """
-    Scrape all dealer sites for current retail prices.
-    Returns list of {source, title, condition, price}.
-    """
-    all_results = []
-    for site in _DEALER_SITES:
-        results = _scrape_one_dealer(site, keywords)
-        all_results.extend(results)
-        time.sleep(2)
-    return all_results
-
-
-def _scrape_sold_comps(keywords: str, seller_filter: Optional[str] = None) -> list[dict]:
-    """Scrape eBay UK completed/sold listings as fallback when Finding API is rate-limited."""
-    import cloudscraper
-    from bs4 import BeautifulSoup
-    import urllib.parse
-
-    # Establish session with cookies by hitting the homepage first
-    scraper = cloudscraper.create_scraper()
-    try:
-        scraper.get("https://www.ebay.co.uk", headers=_SCRAPE_HEADERS, timeout=20)
-        time.sleep(1)
-    except Exception as exc:
-        print(f"[brain] eBay session warm-up failed: {exc}")
+    filters = "buyingOptions:{AUCTION|FIXED_PRICE},itemLocationCountry:GB,conditions:{USED}"
 
     all_items: list[dict] = []
-    for page in range(1, 4):  # max 3 pages
-        params: dict = {
-            "_nkw": keywords,
-            "_sacat": "0",
-            "LH_Sold": "1",
-            "LH_Complete": "1",
-            "LH_ItemCondition": "3000",
-            "_sop": "13",
-            "_pgn": str(page),
+    for offset in range(0, 150, 50):  # up to 3 pages of 50 = 150 items
+        params = {
+            "q": keywords,
+            "filter": filters,
+            "sort": "-endDate",
+            "limit": "50",
+            "offset": str(offset),
         }
-        if seller_filter == "golfbidder":
-            params["_ssn"] = "golfbidder"
-        # exclude_dealers: no URL param available — filtered post-scrape
-
-        url = _EBAY_SCRAPE_BASE + "?" + urllib.parse.urlencode(params)
-        print(f"[brain] Scrape fallback page {page}: {url[:120]}")
+        print(f"[brain] Browse API: {keywords!r} offset={offset}")
         try:
-            resp = scraper.get(url, headers=_SCRAPE_HEADERS, timeout=20)
+            resp = requests.get(BROWSE_API_URL, headers=headers, params=params, timeout=20)
+            print(f"[brain] Browse API response: {resp.status_code}")
+            if resp.status_code == 401:
+                # Token expired mid-run — refresh once and retry
+                _browse_token_cache.clear()
+                token = _get_browse_token()
+                headers["Authorization"] = f"Bearer {token}"
+                resp = requests.get(BROWSE_API_URL, headers=headers, params=params, timeout=20)
             resp.raise_for_status()
         except Exception as exc:
-            print(f"[brain] Scrape error page {page}: {exc}")
+            print(f"[brain] Browse API error at offset {offset}: {exc}")
             break
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        items_on_page = 0
-        for li in soup.select("li.s-item"):
+        data = resp.json()
+        item_summaries = data.get("itemSummaries", [])
+        if not item_summaries:
+            break
+
+        for item in item_summaries:
             try:
-                title_el = li.select_one(".s-item__title")
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True)
-                if title.lower() in ("shop on ebay", "results matching fewer words"):
-                    continue
+                price_obj = item.get("price", {})
+                price = float(price_obj.get("value", 0))
+                shipping_options = item.get("shippingOptions", [])
+                shipping = 0.0
+                if shipping_options:
+                    s = shipping_options[0].get("shippingCost", {})
+                    shipping = float(s.get("value", 0))
 
-                price_el = li.select_one(".s-item__price")
-                if not price_el:
-                    continue
-                price_text = price_el.get_text(strip=True).replace("£", "").replace(",", "").split()[0]
-                price = float(price_text)
-
-                url_el = li.select_one("a.s-item__link")
-                item_url = url_el["href"].split("?")[0] if url_el else ""
-
-                date_el = li.select_one(".s-item__ended-date, .s-item__listingDate, .POSITIVE")
-                end_time = date_el.get_text(strip=True) if date_el else ""
-
-                seller_el = li.select_one(".s-item__seller-info-text")
-                seller_name = seller_el.get_text(strip=True).lower() if seller_el else ""
-
-                shipping_el = li.select_one(".s-item__shipping")
-                shipping_text = shipping_el.get_text(strip=True) if shipping_el else ""
-                if "free" in shipping_text.lower():
-                    shipping = 0.0
-                else:
-                    ship_match = re.search(r"£([\d.]+)", shipping_text)
-                    shipping = float(ship_match.group(1)) if ship_match else 0.0
-
+                seller = item.get("seller", {}).get("username", "").lower()
                 if seller_filter == "exclude_dealers":
-                    if any(d in seller_name for d in _DEALER_EBAY_SELLERS):
+                    if any(d in seller for d in {"golfbidder", "cashforeclubs", "golfavenue"}):
                         continue
 
+                buying_options = item.get("buyingOptions", [])
+                listing_type = "Auction" if "AUCTION" in buying_options else "FixedPrice"
+
                 all_items.append({
-                    "title": title,
+                    "title": item.get("title", ""),
                     "price": price,
                     "shipping": shipping,
                     "total_price": price + shipping,
                     "bid_count": 0,
-                    "listing_type": "FixedPrice",
-                    "seller": seller_name,
+                    "listing_type": listing_type,
+                    "seller": seller,
                     "feedback_score": 0,
-                    "item_id": item_url.split("/")[-1] if item_url else "",
-                    "url": item_url,
-                    "end_time": end_time,
-                    "condition_text": "",
+                    "item_id": item.get("itemId", ""),
+                    "url": item.get("itemWebUrl", ""),
+                    "end_time": item.get("itemEndDate", ""),
+                    "condition_text": item.get("condition", ""),
                 })
-                items_on_page += 1
-            except Exception:
+            except (ValueError, TypeError, KeyError):
                 continue
 
-        print(f"[brain] Scrape page {page}: {items_on_page} items")
-        if items_on_page == 0:
+        print(f"[brain] Browse API offset {offset}: {len(item_summaries)} items")
+        if len(item_summaries) < 50:
             break
-        time.sleep(2)
+        time.sleep(1)
 
-    print(f"[brain] Scrape fallback total: {len(all_items)} items for {keywords!r}")
-    return all_items
-
-
-def _is_rate_limit_error(xml_text: str) -> bool:
-    """Return True if the Finding API response contains errorId 10001."""
-    try:
-        root = ET.fromstring(xml_text)
-        ns = {"e": _FINDING_NS}
-        for code_el in root.findall(".//e:errorId", ns):
-            if code_el.text and code_el.text.strip() == "10001":
-                return True
-    except ET.ParseError:
-        pass
-    return False
-
-
-def fetch_sold_comps(keywords: str, seller_filter: Optional[str] = None) -> list[dict]:
-    global _finding_call_count
-    if _finding_call_count >= FINDING_API_DAILY_LIMIT:
-        print(f"[brain] Finding API daily limit reached -- using scrape fallback for {keywords!r}")
-        return _scrape_sold_comps(keywords, seller_filter)
-
-    all_items = []
-    rate_limited = False
-    for page in range(1, 4):  # max 3 pages = 300 items
-        if _finding_call_count >= FINDING_API_DAILY_LIMIT:
-            print(f"[brain] Finding API daily limit reached mid-fetch -- stopping")
-            rate_limited = True
-            break
-        try:
-            resp = _finding_request(keywords, seller_filter, page)
-            _finding_call_count += 1
-        except Exception as exc:
-            print(f"[brain] Finding API error page {page}: {exc}")
-            break
-
-        if resp.status_code == 500 and _is_rate_limit_error(resp.text):
-            print(f"[brain] Finding API rate limited (error 10001) -- switching to scrape fallback")
-            rate_limited = True
-            break
-
-        try:
-            resp.raise_for_status()
-        except Exception as exc:
-            print(f"[brain] Finding API HTTP error page {page}: {exc}")
-            break
-
-        items = _parse_finding_items(resp.text)
-        if not items:
-            break
-        all_items.extend(items)
-        time.sleep(3)  # throttle: avoid per-second rate limit (error 10001)
-
-    if rate_limited and not all_items:
-        return _scrape_sold_comps(keywords, seller_filter)
+    print(f"[brain] Browse API total: {len(all_items)} items for {keywords!r}")
     return all_items
 
 
@@ -1065,14 +749,7 @@ def process_entry(entry: dict) -> dict:
 
     print(f"[brain] Processing: {make} {model} ({club_type}) -- {condition}")
 
-    # Scrape dealer retail prices for ceiling reference
-    dealer_prices = scrape_dealer_ceiling_prices(keywords)
-    gb_prices = [d["price"] for d in dealer_prices if d["source"] == "Golf Bidder"]
-    golfbidder_ceiling = round(min(gb_prices) / 5) * 5 if gb_prices else None
-    all_ceiling_prices = [d["price"] for d in dealer_prices]
-    overall_ceiling = round(max(all_ceiling_prices) / 5) * 5 if all_ceiling_prices else None
-
-    # Fetch private seller comps (excluding known dealers)
+    # Fetch private seller comps via Browse API (excluding known dealers)
     private_raw = fetch_sold_comps(keywords, seller_filter="exclude_dealers")
 
     # Determine shaft and club count for filtering
@@ -1095,9 +772,9 @@ def process_entry(entry: dict) -> dict:
     pricing = compute_pricing(private_accepted)
 
     _base = {
-        "golfbidder_ceiling": golfbidder_ceiling,
-        "overall_ceiling": overall_ceiling,
-        "dealer_prices": dealer_prices,
+        "golfbidder_ceiling": None,
+        "overall_ceiling": None,
+        "dealer_prices": [],
         "excluded_comps": private_excluded,
     }
 
