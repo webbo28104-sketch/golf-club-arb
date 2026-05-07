@@ -422,6 +422,20 @@ def _run_brain_endpoint():
     return jsonify({"status": "started", "message": "Brain run triggered - check Railway logs"})
 
 
+@_flask_app.route("/reset-queue")
+def _reset_queue_endpoint():
+    token = request.args.get("token", "")
+    if token != _BRAIN_RUN_TOKEN:
+        return jsonify({"status": "forbidden", "message": "Invalid token"}), 403
+
+    import brain_builder
+    try:
+        brain_builder.hard_reset_queue()
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 500
+    return jsonify({"status": "ok", "message": "Queue reset -- next run starts from Titleist T100"})
+
+
 @_flask_app.route("/health")
 def _health():
     return jsonify({"status": "ok"})

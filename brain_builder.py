@@ -361,6 +361,15 @@ def mark_done(queue_id: int):
         conn.commit()
 
 
+def hard_reset_queue():
+    """Reset ALL queue entries to pending, regardless of status. Use to restart from the top."""
+    with _pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE brain_queue SET status='pending', scheduled_date=NULL")
+        conn.commit()
+    print("[brain] Queue hard-reset -- all entries set to pending")
+
+
 def reset_queue_cycle():
     with _pg_conn() as conn:
         with conn.cursor() as cur:
@@ -849,9 +858,12 @@ def run_day():
         try:
             result = process_entry(entry)
             pending_id = save_pending_price(entry, result)
-            notion_page_id = create_notion_review_page(entry, result)
-            if notion_page_id:
-                update_notion_page_id(pending_id, notion_page_id)
+            if not result.get("insufficient_data"):
+                notion_page_id = create_notion_review_page(entry, result)
+                if notion_page_id:
+                    update_notion_page_id(pending_id, notion_page_id)
+            else:
+                print(f"  [brain] Skipping Notion page -- insufficient data")
             mark_done(queue_id)
             time.sleep(5)  # throttle gap between entries
         except Exception as exc:
