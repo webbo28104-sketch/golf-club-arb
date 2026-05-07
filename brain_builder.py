@@ -517,20 +517,28 @@ def _parse_finding_items(xml_text: str) -> list[dict]:
     return items
 
 
-_SCRAPE_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36"
-)
+_SCRAPE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-GB,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
 _EBAY_SCRAPE_BASE = "https://www.ebay.co.uk/sch/i.html"
 
 # Known dealer eBay seller names — exclude from private sold comps
-_DEALER_EBAY_SELLERS = {"golfbidder", "cashforeclubs", "golfavenue", "second_hand_golf_clubs_uk"}
+_DEALER_EBAY_SELLERS = {"golfbidder", "cashforeclubs", "golfavenue"}
 
 _DEALER_SITES = [
     {
         "name": "Golf Bidder",
-        "search_url": "https://www.golfbidder.co.uk/search?q={query}",
+        # Use category listing page — more accessible than search endpoint
+        "search_url": "https://www.golfbidder.co.uk/used-golf-clubs?q={query}",
         "price_selectors": [".product-price", ".price", "[class*='price']"],
         "title_selectors": [".product-title", ".product-name", "h2", "h3"],
         "condition_selectors": [".condition", "[class*='condition']", ".product-condition"],
@@ -549,13 +557,6 @@ _DEALER_SITES = [
         "title_selectors": [".product-title", ".product-name", "h2", "h3"],
         "condition_selectors": [".condition", "[class*='condition']"],
     },
-    {
-        "name": "Second Hand Golf Clubs UK",
-        "search_url": "https://www.secondhandgolfclubs.co.uk/search?q={query}",
-        "price_selectors": [".price", ".product-price", "[class*='price']"],
-        "title_selectors": [".product-title", ".product-name", "h2", "h3"],
-        "condition_selectors": [".condition", "[class*='condition']"],
-    },
 ]
 
 
@@ -569,13 +570,15 @@ def _extract_gbp(text: str) -> Optional[float]:
 
 def _scrape_one_dealer(site: dict, keywords: str) -> list[dict]:
     """Scrape a single dealer site and return list of {source, title, condition, price}."""
+    import cloudscraper
     from bs4 import BeautifulSoup
     import urllib.parse
 
     url = site["search_url"].format(query=urllib.parse.quote_plus(keywords))
     print(f"[brain] Dealer scrape: {site['name']} -- {url}")
     try:
-        resp = requests.get(url, headers={"User-Agent": _SCRAPE_UA}, timeout=20)
+        scraper = cloudscraper.create_scraper()
+        resp = scraper.get(url, headers=_SCRAPE_HEADERS, timeout=20)
         resp.raise_for_status()
     except Exception as exc:
         print(f"[brain] Dealer scrape failed ({site['name']}): {exc}")
@@ -680,8 +683,17 @@ def scrape_dealer_ceiling_prices(keywords: str) -> list[dict]:
 
 def _scrape_sold_comps(keywords: str, seller_filter: Optional[str] = None) -> list[dict]:
     """Scrape eBay UK completed/sold listings as fallback when Finding API is rate-limited."""
+    import cloudscraper
     from bs4 import BeautifulSoup
     import urllib.parse
+
+    # Establish session with cookies by hitting the homepage first
+    scraper = cloudscraper.create_scraper()
+    try:
+        scraper.get("https://www.ebay.co.uk", headers=_SCRAPE_HEADERS, timeout=20)
+        time.sleep(1)
+    except Exception as exc:
+        print(f"[brain] eBay session warm-up failed: {exc}")
 
     all_items: list[dict] = []
     for page in range(1, 4):  # max 3 pages
@@ -701,7 +713,7 @@ def _scrape_sold_comps(keywords: str, seller_filter: Optional[str] = None) -> li
         url = _EBAY_SCRAPE_BASE + "?" + urllib.parse.urlencode(params)
         print(f"[brain] Scrape fallback page {page}: {url[:120]}")
         try:
-            resp = requests.get(url, headers={"User-Agent": _SCRAPE_UA}, timeout=20)
+            resp = scraper.get(url, headers=_SCRAPE_HEADERS, timeout=20)
             resp.raise_for_status()
         except Exception as exc:
             print(f"[brain] Scrape error page {page}: {exc}")
