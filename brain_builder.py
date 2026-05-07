@@ -429,12 +429,10 @@ def update_notion_page_id(pending_id: int, notion_page_id: str):
 _FINDING_NS = "http://www.ebay.com/marketplace/search/v1/services"
 
 
-_finding_debug_logged = False
 _finding_call_count = 0
 FINDING_API_DAILY_LIMIT = 100
 
 def _finding_request(keywords: str, seller_filter: Optional[str], page: int = 1) -> requests.Response:
-    global _finding_debug_logged
     from datetime import timezone as _tz
     app_id = os.environ.get("EBAY_CLIENT_ID", "")
     now = datetime.now(_tz.utc)
@@ -467,17 +465,12 @@ def _finding_request(keywords: str, seller_filter: Optional[str], page: int = 1)
         "Content-Type": "text/xml",
         "X-EBAY-SOA-GLOBAL-ID": "EBAY-GB",
     }
-    if not _finding_debug_logged:
-        _finding_debug_logged = True
-        app_id_preview = app_id[:12] + "..." if len(app_id) > 12 else repr(app_id)
-        print(f"[brain] Finding API debug -- URL: {FINDING_URL}")
-        print(f"[brain] Finding API debug -- App ID: {app_id_preview}")
-        print(f"[brain] Finding API debug -- Headers: {list(headers.keys())}")
-        print(f"[brain] Finding API debug -- Body preview: {body[:200]}")
-    time.sleep(1)
+    app_id_preview = app_id[:12] + "..." if len(app_id) > 12 else repr(app_id)
+    print(f"[brain] Finding API call -- URL: {FINDING_URL}")
+    print(f"[brain] Finding API call -- headers: { {k: (v if k != 'X-EBAY-SOA-SECURITY-APPNAME' else app_id_preview) for k, v in headers.items()} }")
+    print(f"[brain] Finding API call -- body[:120]: {body[:120]}")
     resp = requests.post(FINDING_URL, headers=headers, data=body.encode("utf-8"), timeout=20)
-    if not _finding_debug_logged or resp.status_code >= 400:
-        print(f"[brain] Finding API response: {resp.status_code} -- {resp.text[:300]}")
+    print(f"[brain] Finding API response: {resp.status_code} -- {resp.text[:300]}")
     return resp
 
 
